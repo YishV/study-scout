@@ -30,6 +30,7 @@ class Store:
             CREATE TABLE IF NOT EXISTS replies (id INTEGER PRIMARY KEY, comment_id INTEGER REFERENCES comments(id), parent_rpid INTEGER, reply_rpid INTEGER, message TEXT, status TEXT, created_at TEXT, UNIQUE(comment_id,parent_rpid));
             CREATE TABLE IF NOT EXISTS accounts (id INTEGER PRIMARY KEY, platform TEXT, uid INTEGER, nickname TEXT, credential_blob BLOB, updated_at TEXT);
             CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT);
+            CREATE TABLE IF NOT EXISTS dm_replies (id INTEGER PRIMARY KEY, account_uid INTEGER NOT NULL, owner_uid INTEGER NOT NULL, msg_key TEXT NOT NULL, status TEXT NOT NULL, created_at TEXT NOT NULL, UNIQUE(account_uid,owner_uid,msg_key));
             ''')
             columns = {row['name'] for row in db.execute('PRAGMA table_info(candidates)')}
             if 'skip_reason' not in columns:
@@ -129,6 +130,39 @@ class Store:
         with self.connect() as db:
             return [dict(r) for r in db.execute('SELECT * FROM runs ORDER BY id DESC LIMIT 10')]
 
+    def get_setting(self, key):
+        with self.connect() as db:
+            row = db.execute('SELECT value FROM settings WHERE key=?', (key,)).fetchone()
+            return row['value'] if row else None
+
+    def set_setting(self, key, value):
+        with self.connect() as db:
+            db.execute('INSERT INTO settings(key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value',
+                       (key, str(value)))
+
+    def claim_dm_reply(self, account_uid, owner_uid, msg_key):
+        with self.connect() as db:
+            result = db.execute('INSERT OR IGNORE INTO dm_replies(account_uid,owner_uid,msg_key,status,created_at) VALUES (?,?,?,?,?)',
+                                (account_uid, owner_uid, str(msg_key), 'pending', now()))
+            return bool(result.rowcount)
+
+    def update_dm_reply(self, account_uid, owner_uid, msg_key, status):
+        with self.connect() as db:
+            db.execute('UPDATE dm_replies SET status=? WHERE account_uid=? AND owner_uid=? AND msg_key=?',
+                       (status, account_uid, owner_uid, str(msg_key)))
+
+    def dm_reply_count(self):
+        with self.connect() as db:
+            return db.execute('SELECT count(*) FROM dm_replies').fetchone()[0]
+
+    def own_comment_by_root(self, aid, rpid):
+        with self.connect() as db:
+            row = db.execute('''SELECT comments.*,candidates.aid FROM comments
+                JOIN candidates ON candidates.id=comments.candidate_id
+                WHERE candidates.aid=? AND comments.rpid=? AND comments.status='ok' LIMIT 1''',
+                (aid, rpid)).fetchone()
+            return dict(row) if row else None
+
     def run_results(self, run_id):
         with self.connect() as db:
             return [dict(r) for r in db.execute('''SELECT c.bvid,c.title,c.subtitle_available,j.score,j.reason,a.kind,a.status,a.error_code,a.request_json
@@ -160,6 +194,7 @@ class Store:
                 'actions_ok': db.execute("SELECT count(*) FROM actions WHERE status='ok' AND kind IN ('like','favorite','comment','private_message')").fetchone()[0],
                 'actions_failed': db.execute("SELECT count(*) FROM actions WHERE status='failed' AND kind IN ('like','favorite','comment','private_message')").fetchone()[0],
                 'replies_ok': db.execute("SELECT count(*) FROM replies WHERE status='ok'").fetchone()[0],
+                'dm_replies_ok': db.execute("SELECT count(*) FROM dm_replies WHERE status='ok'").fetchone()[0],
             }
             videos = []
             if selected_run:

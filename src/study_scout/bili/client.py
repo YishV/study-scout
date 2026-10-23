@@ -81,6 +81,20 @@ class BiliClient:
         return await self.request('POST', 'https://api.vc.bilibili.com/web_im/v1/web_im/send_msg',
                                   params=params, data=data, auth=True)
 
+    async def private_messages(self, owner_uid: int):
+        if owner_uid <= 0:
+            raise ValueError('必须配置大号 UID')
+        data = (await self.signed('https://api.vc.bilibili.com/svr_sync/v1/svr_sync/fetch_session_msgs',
+                                  {'sender_device_id': 1, 'talker_id': owner_uid,
+                                   'session_type': 1, 'size': 50, 'build': 0, 'mobi_app': 'web'}))['data']
+        return data.get('messages') or [], bool(data.get('has_more'))
+
+    async def reply_notifications(self, *, offset_id=None, reply_time=None):
+        params = {'platform': 'web', 'build': 0, 'mobi_app': 'web'}
+        if offset_id is not None:
+            params.update(id=offset_id, reply_time=reply_time)
+        return (await self.request('GET', '/x/msgfeed/reply', params=params))['data']
+
     async def discover(self, keyword):
         keywords = [keyword] if isinstance(keyword, str) else keyword
         groups = []

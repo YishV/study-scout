@@ -1,4 +1,4 @@
-"""One foreground terminal session: scan, authenticate, then run once."""
+"""Foreground terminal commands: one video run or an explicit message listener."""
 
 import argparse
 import asyncio
@@ -16,6 +16,7 @@ from .bili.client import BiliClient
 from .config import Settings
 from .dashboard import serve_dashboard
 from .instance_lock import AlreadyRunning, single_instance
+from .listener import MessageListener
 from .runner import Runner
 from .storage import Store
 
@@ -73,17 +74,21 @@ async def _run_command(command, settings, store, *, bvid=None, comment_id=None, 
         output('通知已确认。' if command == 'confirm-notification' else '未收到通知，真实互动保持锁定。')
         return 0
 
-    if command not in ('run', 'verify-mention', 'verify-private-message', 'check-replies'):
+    if command not in ('run', 'listen', 'verify-mention', 'verify-private-message', 'check-replies'):
         raise ValueError(f'未知命令：{command}')
     if command == 'verify-mention' and not bvid:
         raise ValueError('请提供测试视频 BV 号；此命令会发一条公开验证评论')
     if command == 'verify-private-message' and not settings.owner_uid:
         raise ValueError('请先在 .env 配置大号 BILI_OWNER_UID')
-    if command in ('run', 'check-replies') and not settings.dry_run and not store.mention_ready(settings.owner_uid):
+    if command in ('run', 'listen', 'check-replies') and not settings.dry_run and not store.mention_ready(settings.owner_uid):
         output('真实互动锁定：目标账号尚未确认收到 @ 通知；未开始扫码或运行。')
         return 1
-    if command == 'run' and judge is None and not all((settings.model_base_url, settings.model_name, settings.model_api_key)):
+    needs_model = (command == 'run' and judge is None) or (command == 'listen' and not settings.dry_run)
+    if needs_model and not all((settings.model_base_url, settings.model_name, settings.model_api_key)):
         output('请先在 .env 配置 MODEL_BASE_URL、MODEL_NAME、MODEL_API_KEY；未开始扫码或运行。')
+        return 1
+    if command == 'listen' and not settings.owner_uid:
+        output('请先在 .env 配置大号 BILI_OWNER_UID；未开始扫码或监听。')
         return 1
     if command == 'check-replies' and settings.dry_run:
         output('DRY_RUN：自动回复锁定，未登录或发送。')
@@ -118,6 +123,11 @@ async def _run_command(command, settings, store, *, bvid=None, comment_id=None, 
             output('私信接口已接受一条测试消息；请在目标账号检查实际送达。未发送点赞、收藏或评论。')
             return 0
         runner = Runner(settings, store, bili, judge=judge, sleep=sleep, model_http=model)
+        if command == 'listen':
+            listener = MessageListener(settings, store, bili, model_http=model, sleep=sleep, output=output)
+            output('运行模式：' + ('DRY_RUN，只读取新消息。' if settings.dry_run else '真实自动回复。'))
+            await listener.run_forever()
+            return 0
         if command == 'verify-mention':
             result = await runner.verify_test_mention(bvid)
             output(f"公开验证评论 RPID {result['rpid']}；接口成员匹配：{result['reply_member_verified']}。")
@@ -143,13 +153,13 @@ async def _run_command(command, settings, store, *, bvid=None, comment_id=None, 
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description='扫码登录后执行一轮 B 站学习筛选')
-    parser.add_argument('command', nargs='?', choices=('run', 'status', 'dashboard', 'verify-mention', 'verify-private-message', 'confirm-notification', 'notification-missing', 'check-replies'), default='run')
+    parser = argparse.ArgumentParser(description='扫码登录后执行一轮筛选，或前台监听新消息')
+    parser.add_argument('command', nargs='?', choices=('run', 'listen', 'status', 'dashboard', 'verify-mention', 'verify-private-message', 'confirm-notification', 'notification-missing', 'check-replies'), default='run')
     parser.add_argument('value', nargs='?', help='验证视频 BV 号或待确认的评论 ID')
     args = parser.parse_args(argv)
     if args.command in ('verify-mention', 'confirm-notification', 'notification-missing') and not args.value:
         parser.error('此命令需要视频 BV 号或评论 ID')
-    if args.command in ('run', 'status', 'dashboard', 'verify-private-message', 'check-replies') and args.value:
+    if args.command in ('run', 'listen', 'status', 'dashboard', 'verify-private-message', 'check-replies') and args.value:
         parser.error('此命令不接受额外参数')
     try:
         store = Store(Path('data/study-scout.sqlite3'))

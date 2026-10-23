@@ -7,6 +7,8 @@ def make_fake_bili(*, fail_code: int = 0, dm_fail_code: int = 0, mention_uid: in
     app = FastAPI()
     calls: list[tuple[str, dict]] = []
     poll_index = 0
+    dm_messages: list[dict] = []
+    reply_notifications: list[dict] = []
 
     @app.api_route('/{path:path}', methods=['GET', 'POST'])
     async def handle(path: str, request: Request):
@@ -38,6 +40,19 @@ def make_fake_bili(*, fail_code: int = 0, dm_fail_code: int = 0, mention_uid: in
             return {'code': dm_fail_code, 'message': '私信发送受限'}
         if path == 'x/web-interface/nav':
             return {'code': 0, 'data': {'mid': 99, 'isLogin': True, 'wbi_img': {'img_url': 'https://i/7cd084941338484aae1ad9425b84077c.png', 'sub_url': 'https://i/4932caff0ff746eab6f01bf08b70ac45.png'}}}
+        if path == 'svr_sync/v1/svr_sync/fetch_session_msgs':
+            return {'code': 0, 'data': {'messages': sorted(dm_messages, key=lambda m: m['msg_seqno'], reverse=True)[:50],
+                                        'has_more': int(len(dm_messages) > 50)}}
+        if path == 'x/msgfeed/reply':
+            offset = int(form.get('id') or 0)
+            items = sorted(reply_notifications, key=lambda m: int(m['id']), reverse=True)
+            if offset:
+                items = [item for item in items if int(item['id']) < offset]
+            page = items[:20]
+            return {'code': 0, 'data': {'items': page,
+                                        'cursor': {'id': page[-1]['id'] if page else 0,
+                                                   'time': page[-1]['reply_time'] if page else 0,
+                                                   'is_end': len(items) <= 20}}}
         if path.endswith('feed/rcmd') or path.endswith('popular') or path.endswith('search/type'):
             return {'code': 0, 'data': {'item': [{'bvid': 'BV1test', 'title': 'Python 调试', 'owner': {'mid': 7, 'name': '老师'}}], 'list': [{'bvid': 'BV1test', 'title': 'Python 调试'}], 'result': []}}
         if path == 'x/web-interface/view':
@@ -54,4 +69,6 @@ def make_fake_bili(*, fail_code: int = 0, dm_fail_code: int = 0, mention_uid: in
             return {'code': 0, 'data': {'reply': {'rpid': 201 if 'root' not in form else 401, 'content': {'members': [{'mid': mention_uid}] if mention_uid else []}}}}
         return {'code': 0, 'data': {}}
 
+    app.state.dm_messages = dm_messages
+    app.state.reply_notifications = reply_notifications
     return app, calls

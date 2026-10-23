@@ -23,6 +23,8 @@ def test_dashboard_shows_run_video_decision_and_interaction_status(tmp_path):
     store.record_action(candidate, 'favorite', 'failed', error='-111')
     store.record_action(candidate, 'private_message', 'failed', error='-111')
     store.save_comment(candidate, 321, '这个例子有用', 42, False, 'ok')
+    assert store.claim_dm_reply(99, 42, 123)
+    store.update_dm_reply(99, 42, 123, 'ok')
     store.update_run_counts(run_id, 1, 1)
     store.finish_run(run_id, 'failed', '-111')
 
@@ -30,10 +32,12 @@ def test_dashboard_shows_run_video_decision_and_interaction_status(tmp_path):
     html = render_dashboard(snapshot)
 
     assert snapshot['totals']['videos'] == 1
+    assert snapshot['totals']['dm_replies_ok'] == 1
     assert snapshot['selected_run']['id'] == run_id
     assert snapshot['videos'][0]['actions']['private_message'] == 'failed'
     assert 'BV1test' in html and '讲了具体步骤' in html
     assert '私信失败' in html and '接口已接受' in html
+    assert '私信自动回复' in html
     assert '&lt;script&gt;' in html and '<script>alert(1)</script>' not in html
     assert 'MODEL_API_KEY' not in html
 

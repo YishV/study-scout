@@ -101,7 +101,8 @@ def render_dashboard(data):
     totals = data['totals']
     stats = [('已运行轮次', totals['runs']), ('检查的视频', totals['videos']),
              ('入选视频', totals['selected']), ('接口成功', totals['actions_ok']),
-             ('互动失败', totals['actions_failed']), ('自动回复', totals['replies_ok'])]
+             ('互动失败', totals['actions_failed']), ('评论自动回复', totals['replies_ok']),
+             ('私信自动回复', totals['dm_replies_ok'])]
     stat_html = ''.join(f'<div class="stat"><span>{label}</span><strong>{_safe(value)}</strong></div>'
                         for label, value in stats)
     selected = data['selected_run']

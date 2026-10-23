@@ -31,6 +31,9 @@ class Settings:
     dry_run: bool = True
     persona: str = '认真、简短、只谈视频中的具体做法，不装懂'
     share_method: str = 'private_message'
+    listen_interval_seconds: int = 60
+    listen_max_per_cycle: int = 5
+    listen_max_per_session: int = 20
 
     @property
     def interests(self) -> list[str]:
@@ -56,6 +59,9 @@ class Settings:
             dry_run=get('DRY_RUN', 'true').lower() != 'false',
             persona=get('STUDY_PERSONA', '认真、简短、只谈视频中的具体做法，不装懂'),
             share_method=get('BILI_SHARE_METHOD', 'private_message'),
+            listen_interval_seconds=int(get('BILI_LISTEN_INTERVAL_SECONDS', '60')),
+            listen_max_per_cycle=int(get('BILI_LISTEN_MAX_PER_CYCLE', '5')),
+            listen_max_per_session=int(get('BILI_LISTEN_MAX_PER_SESSION', '20')),
         )
         if s.write_delay_min < 5 or s.write_delay_max < s.write_delay_min:
             raise ValueError('写操作等待必须至少 5 秒，最大值不得小于最小值')
@@ -63,4 +69,10 @@ class Settings:
             raise ValueError('STUDY_TOPICS 至少填写一个兴趣词')
         if s.share_method not in ('private_message', 'comment_mention'):
             raise ValueError('BILI_SHARE_METHOD 只能是 private_message 或 comment_mention')
+        if s.listen_interval_seconds < 60:
+            raise ValueError('BILI_LISTEN_INTERVAL_SECONDS 至少为 60')
+        if not 1 <= s.listen_max_per_cycle <= 5:
+            raise ValueError('BILI_LISTEN_MAX_PER_CYCLE 必须为 1～5')
+        if not 1 <= s.listen_max_per_session <= 20:
+            raise ValueError('BILI_LISTEN_MAX_PER_SESSION 必须为 1～20')
         return s
