@@ -109,6 +109,16 @@ async def test_private_share_uses_target_uid_signed_request_and_login_cookie():
     assert form['w_rid'] and form['wts']
     assert form['_has_cookie']
     assert form['csrf_token'] == 'csrf'
+    assert form['csrf'] == 'csrf'
+
+
+@pytest.mark.asyncio
+async def test_fake_private_message_rejects_token_without_official_csrf_field():
+    app, _ = make_fake_bili()
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='https://fake.test') as http:
+        response = await http.post('https://api.vc.bilibili.com/web_im/v1/web_im/send_msg',
+                                   data={'csrf_token': 'csrf'}, headers={'Cookie': 'bili_jct=csrf'})
+    assert response.json()['code'] == -111
 
 
 @pytest.mark.asyncio

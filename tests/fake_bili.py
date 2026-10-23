@@ -16,7 +16,8 @@ def make_fake_bili(*, fail_code: int = 0, dm_fail_code: int = 0, mention_uid: in
             form.update(request.query_params)
         if path.endswith('/send_msg'):
             form['_has_cookie'] = bool(request.headers.get('cookie'))
-            if not form.get('csrf_token') or form['csrf_token'] != request.cookies.get('bili_jct'):
+            csrf = request.cookies.get('bili_jct')
+            if not csrf or form.get('csrf') != csrf or form.get('csrf_token') != csrf:
                 calls.append((path, form))
                 return {'code': -111, 'message': 'CSRF 校验失败'}
         calls.append((path, form))

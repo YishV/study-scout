@@ -76,7 +76,8 @@ class BiliClient:
                   'new_face_version': 0, 'dev_id': self._dm_device_id,
                   'timestamp': int(time.time())}
         data = {f'msg[{key}]': value for key, value in fields.items()}
-        data.update(n=1, from_firework=0, build=0, mobi_app='web', csrf_token=self.csrf)
+        data.update(n=1, from_firework=0, build=0, mobi_app='web',
+                    csrf=self.csrf, csrf_token=self.csrf)
         return await self.request('POST', 'https://api.vc.bilibili.com/web_im/v1/web_im/send_msg',
                                   params=params, data=data, auth=True)
 
