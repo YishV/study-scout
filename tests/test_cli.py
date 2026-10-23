@@ -104,17 +104,55 @@ async def test_start_prints_qr_and_waits_for_login_before_one_round(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_expired_qr_never_starts_runner(tmp_path):
-    fake, calls = make_fake_bili(poll_codes=(86038,))
+async def test_expired_qr_refreshes_and_only_starts_after_login(tmp_path):
+    fake, calls = make_fake_bili(poll_codes=(86038, 0))
     store = Store(tmp_path / 'test.db')
     store.init()
     messages = []
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=fake), base_url='https://fake.test') as http:
         result = await cli.run_command('run', Settings(), store, bili_http=http, judge=fake_judge, sleep=lambda _: asyncio.sleep(0), output=messages.append)
-    assert result != 0
-    assert not store.recent_runs()
-    assert [path for path, _ in calls if path.endswith('qrcode/poll')] == ['x/passport-login/web/qrcode/poll']
+    assert result == 0
+    assert store.recent_runs()[0]['status'] == 'done'
+    assert len([path for path, _ in calls if path.endswith('qrcode/generate')]) == 2
+    assert len([path for path, _ in calls if path.endswith('qrcode/poll')]) == 2
     assert any('过期' in message for message in messages)
+    assert [path for path, _ in calls if path.endswith('search/type')]
+
+
+@pytest.mark.asyncio
+async def test_real_mode_can_start_after_scan_when_confirmation_is_optional(tmp_path):
+    fake, calls = make_fake_bili()
+    store = Store(tmp_path / 'test.db')
+    store.init()
+    settings = Settings(topics='Python', owner_uid=42, owner_name='示例用户',
+                        fav_folder_id=9, dry_run=False, max_replies=0,
+                        require_notification_confirmation=False)
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=fake), base_url='https://fake.test') as http:
+        result = await cli.run_command('run', settings, store, bili_http=http,
+                                       judge=fake_judge, sleep=lambda _: asyncio.sleep(0), output=lambda _: None)
+    assert result == 0
+    assert not store.mention_ready(42)
+    paths = [path for path, _ in calls]
+    assert paths.index('x/passport-login/web/qrcode/poll') < paths.index('x/web-interface/archive/like')
+    assert 'x/v3/fav/resource/deal' in paths
+    assert 'x/v2/reply/add' in paths
+    assert 'web_im/v1/web_im/send_msg' in paths
+
+
+@pytest.mark.asyncio
+async def test_scanning_owner_account_stops_before_any_round(tmp_path):
+    fake, calls = make_fake_bili()
+    store = Store(tmp_path / 'test.db')
+    store.init()
+    settings = Settings(owner_uid=99, dry_run=False,
+                        require_notification_confirmation=False)
+    messages = []
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=fake), base_url='https://fake.test') as http:
+        result = await cli.run_command('run', settings, store, bili_http=http,
+                                       judge=fake_judge, output=messages.append)
+    assert result == 1
+    assert not store.recent_runs()
+    assert any('大号' in message for message in messages)
     assert not any(path.endswith('feed/rcmd') for path, _ in calls)
 
 
@@ -230,6 +268,14 @@ def test_env_file_is_the_editable_config_source(tmp_path, monkeypatch):
     assert settings.topics == 'Python'
     assert settings.model_name == 'deepseek-chat'
     assert settings.dry_run is True
+
+
+def test_notification_confirmation_can_be_disabled_in_local_config(tmp_path):
+    path = tmp_path / '.env'
+    path.write_text('DRY_RUN=false\nBILI_REQUIRE_NOTIFICATION_CONFIRMATION=false\n', encoding='utf-8')
+    settings = Settings.from_env(path)
+    assert settings.dry_run is False
+    assert settings.require_notification_confirmation is False
 
 
 def test_persona_interests_and_share_method_come_from_env(tmp_path):

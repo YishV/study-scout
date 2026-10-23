@@ -29,6 +29,7 @@ class Settings:
     model_api_key: str = ''
     model_name: str = ''
     dry_run: bool = True
+    require_notification_confirmation: bool = True
     persona: str = '认真、简短、只谈视频中的具体做法，不装懂'
     share_method: str = 'private_message'
     listen_interval_seconds: int = 60
@@ -59,6 +60,7 @@ class Settings:
             model_api_key=get('MODEL_API_KEY', ''),
             model_name=get('MODEL_NAME', ''),
             dry_run=get('DRY_RUN', 'true').lower() != 'false',
+            require_notification_confirmation=get('BILI_REQUIRE_NOTIFICATION_CONFIRMATION', 'true').lower() != 'false',
             persona=get('STUDY_PERSONA', '认真、简短、只谈视频中的具体做法，不装懂'),
             share_method=get('BILI_SHARE_METHOD', 'private_message'),
             listen_interval_seconds=int(get('BILI_LISTEN_INTERVAL_SECONDS', '60')),

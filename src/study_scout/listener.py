@@ -177,7 +177,8 @@ class MessageListener:
             self.account_uid = int((await self.bili.nav())['mid'])
         if self.account_uid == self.settings.owner_uid:
             raise ValueError('扫码小号与配置的大号 UID 相同')
-        if not self.settings.dry_run and not self.store.mention_ready(self.settings.owner_uid):
+        if (not self.settings.dry_run and self.settings.require_notification_confirmation
+                and not self.store.mention_ready(self.settings.owner_uid)):
             raise RuntimeError('真实互动锁定：目标账号尚未确认收到 @ 通知')
 
         dm_key = f'listener_dm_cursor_{self.account_uid}_{self.settings.owner_uid}'

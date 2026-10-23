@@ -73,7 +73,8 @@ class Runner:
             status, error = 'done', None
             selected = considered = 0
             try:
-                if not self.settings.dry_run and not self.store.mention_ready(self.settings.owner_uid):
+                if (not self.settings.dry_run and self.settings.require_notification_confirmation
+                        and not self.store.mention_ready(self.settings.owner_uid)):
                     raise RuntimeError('真实写操作锁定：请先完成测试评论 @ UID 和目标账号通知验证')
                 if not self.judge and (not self.settings.model_base_url or not self.settings.model_name or not self.settings.model_api_key):
                     raise RuntimeError('请先配置模型 API 地址、模型名和密钥')
@@ -221,7 +222,8 @@ class Runner:
                 raise
 
     async def check_replies(self):
-        if self.settings.dry_run or not self.store.mention_ready(self.settings.owner_uid):
+        if (self.settings.dry_run or (self.settings.require_notification_confirmation
+                                     and not self.store.mention_ready(self.settings.owner_uid))):
             return 0
         sent = 0
         own_uid = (await self.bili.nav())['mid']

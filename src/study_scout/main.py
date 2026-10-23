@@ -61,7 +61,10 @@ async def _run_command(command, settings, store, *, bvid=None, comment_id=None, 
         for comment in store.pending_mentions():
             output(f"待确认通知：评论 ID {comment['id']}，RPID {comment['rpid']}，目标 UID {comment['mention_uid']}")
         method = '私信' if settings.share_method == 'private_message' else '评论区 @'
-        output(f"运行模式：{'DRY_RUN' if settings.dry_run else '真实操作'}；分享方式：{method}；@ 通知：{'已确认' if store.mention_ready(settings.owner_uid) else '未确认，真实互动锁定'}")
+        notification = ('已确认' if store.mention_ready(settings.owner_uid) else
+                        '未确认，真实互动锁定' if settings.require_notification_confirmation else
+                        '未验收，已选择直接互动')
+        output(f"运行模式：{'DRY_RUN' if settings.dry_run else '真实操作'}；分享方式：{method}；@ 通知：{notification}")
         return 0
 
     if command in ('confirm-notification', 'notification-missing'):
@@ -81,7 +84,8 @@ async def _run_command(command, settings, store, *, bvid=None, comment_id=None, 
         raise ValueError('请提供测试视频 BV 号；此命令会发一条公开验证评论')
     if command == 'verify-private-message' and not settings.owner_uid:
         raise ValueError('请先在 .env 配置大号 BILI_OWNER_UID')
-    if command in ('serve', 'run', 'listen', 'check-replies') and not settings.dry_run and not store.mention_ready(settings.owner_uid):
+    if (command in ('serve', 'run', 'listen', 'check-replies') and not settings.dry_run
+            and settings.require_notification_confirmation and not store.mention_ready(settings.owner_uid)):
         output('真实互动锁定：目标账号尚未确认收到 @ 通知；未开始扫码或运行。')
         return 1
     needs_model = (command in ('serve', 'run') and judge is None) or (command == 'listen' and not settings.dry_run)
@@ -100,23 +104,28 @@ async def _run_command(command, settings, store, *, bvid=None, comment_id=None, 
         model = model_http or await stack.enter_async_context(httpx.AsyncClient(timeout=60))
         bili = BiliClient(http)
         auth = QRLogin(http, bili)
-        url = await auth.generate()
-        output('请用 B 站专用小号扫码登录。登录成功前不会运行。')
-        output(render_qr(url))
-        output(f'若终端二维码无法识别，可打开临时登录链接：{url}')
-        for _ in range(90):
-            state = await auth.poll()
+        while True:
+            url = await auth.generate()
+            output('请用 B 站专用小号扫码登录。登录成功前不会运行。')
+            output(render_qr(url))
+            output(f'若终端二维码无法识别，可打开临时登录链接：{url}')
+            for _ in range(90):
+                state = await auth.poll()
+                if state in ('logged_in', 'expired'):
+                    break
+                await sleep(2)
+            else:
+                state = 'timeout'
             if state == 'logged_in':
                 break
-            if state == 'expired':
-                output('二维码已过期，未运行任何任务；请重新启动。')
-                return 1
+            output('二维码已过期，正在刷新。' if state == 'expired' else '等待扫码超时，正在刷新二维码。')
             await sleep(2)
-        else:
-            output('等待扫码超时，未运行任何任务；请重新启动。')
-            return 1
 
-        output('登录验证通过。')
+        account_uid = int((await bili.nav())['mid'])
+        if account_uid == settings.owner_uid:
+            output('扫码的是配置的大号，请改用专用小号；未运行任何任务。')
+            return 1
+        output(f'登录验证通过，小号 UID：{account_uid}。')
         if command == 'verify-private-message':
             sender_uid = (await bili.nav())['mid']
             await bili.send_private_message(sender_uid, settings.owner_uid,
