@@ -76,7 +76,7 @@ class Store:
 
     def set_notification_confirmed(self, comment_id):
         with self.connect() as db:
-            db.execute("UPDATE comments SET notification_confirmed=1,status='ok' WHERE id=? AND mention_verified=1 AND status='pending_confirmation'", (comment_id,))
+            db.execute("UPDATE comments SET notification_confirmed=1,status='ok' WHERE id=? AND mention_verified=1 AND status IN ('pending_confirmation','mention_unverified')", (comment_id,))
             return bool(db.execute('SELECT 1 FROM comments WHERE id=? AND notification_confirmed=1', (comment_id,)).fetchone())
 
     def mark_notification_missing(self, comment_id):
@@ -84,7 +84,7 @@ class Store:
             row = db.execute("SELECT candidate_id FROM comments WHERE id=? AND status='pending_confirmation' AND notification_confirmed=0", (comment_id,)).fetchone()
             if not row:
                 return False
-            db.execute("UPDATE comments SET mention_verified=0,status='mention_unverified' WHERE id=?", (comment_id,))
+            db.execute("UPDATE comments SET status='mention_unverified' WHERE id=?", (comment_id,))
             db.execute("UPDATE actions SET status='mention_unverified',error_code='notification_missing' WHERE candidate_id=? AND kind='mention_test'", (row['candidate_id'],))
             db.execute("UPDATE runs SET status='failed',error_code='notification_missing',actions_failed=actions_failed+1 WHERE id=(SELECT run_id FROM candidates WHERE id=?)", (row['candidate_id'],))
             return True

@@ -16,7 +16,7 @@ Copy-Item .env.example .env
 
 直接编辑项目根目录的 `.env`，填写主题、目标 UID/准确昵称、模型 API 地址、模型名和密钥。程序启动时读取文件，文件中的值优先于同名环境变量；修改后重新启动即可生效。`MODEL_BASE_URL` 填 OpenAI 兼容 API 的基础地址，不附加 `/chat/completions`。Cookie 不写进配置文件，每次需要访问 B 站时重新扫码，只保存在本次进程内存中。`.env` 和 `data/` 已被 Git 忽略。
 
-先保持 `DRY_RUN=true`。此前测试评论的接口返回包含目标 UID，但目标账号没有收到站内 @ 通知，因此当前数据库里的真实互动锁不能视为已验证。
+新安装默认保持 `DRY_RUN=true`。本地专用小号的验证评论 RPID `321508476416` 已由目标账号确认收到站内 @ 通知；启用真实互动仍需明确将 `.env` 中的 `DRY_RUN` 改为 `false`。其他账号或目标 UID 应重新验收。
 
 ## 启动与停止
 
@@ -51,7 +51,7 @@ Copy-Item .env.example .env
 
 上面的 `123` 是示例，替换为 `status` 显示的实际评论 ID。
 
-`verify-mention` 会真实发送一条公开测试评论，即使 `DRY_RUN=true` 也一样。只有接口返回的 `members` 包含目标 UID，且你在目标账号确认收到站内 @ 通知后，才用 `confirm-notification` 解锁。未收到时用 `notification-missing` 保持锁定，不自动重发。真实模式还需手动将 `.env` 中的 `DRY_RUN` 改为 `false`。写操作之间随机等待 5～20 秒；遇到 412、-509、验证码或频率限制立即停止本轮，不自动重试。
+`verify-mention` 会真实发送一条公开测试评论，即使 `DRY_RUN=true` 也一样。只有接口返回的 `members` 包含目标 UID，且你在目标账号确认收到站内 @ 通知后，才用 `confirm-notification` 解锁。未收到时用 `notification-missing` 保持锁定，不自动重发；若通知后来送达，可对同一评论执行 `confirm-notification`。真实模式还需手动将 `.env` 中的 `DRY_RUN` 改为 `false`。写操作之间随机等待 5～20 秒；遇到 412、-509、验证码或频率限制立即停止本轮，不自动重试。
 
 ## 离线测试
 

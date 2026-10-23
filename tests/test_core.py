@@ -38,15 +38,16 @@ def test_reply_record_can_only_be_claimed_once(tmp_path):
     assert store.reply_count(comment) == 1
 
 
-def test_missing_notification_cannot_be_confirmed_later(tmp_path):
+def test_late_notification_can_be_confirmed_when_api_member_was_verified(tmp_path):
     store = Store(tmp_path / 'test.db')
     store.init()
     run = store.start_run()
     candidate = store.add_candidate(run, {'bvid': 'BVtest', 'aid': 1, 'cid': 2, 'title': 'test'})
     comment = store.save_comment(candidate, 321, '@示例用户 test', 42, True, 'pending_confirmation')
     assert store.mark_notification_missing(comment)
-    assert not store.set_notification_confirmed(comment)
     assert not store.mention_ready(42)
+    assert store.set_notification_confirmed(comment)
+    assert store.mention_ready(42)
     assert store.recent_runs()[0]['error_code'] == 'notification_missing'
 
 
