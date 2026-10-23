@@ -1,6 +1,6 @@
 import json
 import sqlite3
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 
@@ -32,6 +32,7 @@ class Store:
             CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT);
             CREATE TABLE IF NOT EXISTS dm_replies (id INTEGER PRIMARY KEY, account_uid INTEGER NOT NULL, owner_uid INTEGER NOT NULL, msg_key TEXT NOT NULL, status TEXT NOT NULL, created_at TEXT NOT NULL, UNIQUE(account_uid,owner_uid,msg_key));
             CREATE TABLE IF NOT EXISTS mention_replies (id INTEGER PRIMARY KEY, account_uid INTEGER NOT NULL, notification_id TEXT NOT NULL, status TEXT NOT NULL, created_at TEXT NOT NULL, UNIQUE(account_uid,notification_id));
+            CREATE TABLE IF NOT EXISTS video_memory (account_uid INTEGER NOT NULL, owner_uid INTEGER NOT NULL, bvid TEXT NOT NULL, context TEXT NOT NULL, subtitle_available INTEGER NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY(account_uid,owner_uid));
             ''')
             columns = {row['name'] for row in db.execute('PRAGMA table_info(candidates)')}
             if 'skip_reason' not in columns:
@@ -175,6 +176,23 @@ class Store:
         with self.connect() as db:
             db.execute('UPDATE mention_replies SET status=? WHERE account_uid=? AND notification_id=?',
                        (status, account_uid, str(notification_id)))
+
+    def save_video_memory(self, account_uid, owner_uid, bvid, context, subtitle_available):
+        with self.connect() as db:
+            db.execute('''INSERT INTO video_memory(account_uid,owner_uid,bvid,context,subtitle_available,updated_at)
+                VALUES (?,?,?,?,?,?) ON CONFLICT(account_uid,owner_uid) DO UPDATE SET
+                bvid=excluded.bvid,context=excluded.context,
+                subtitle_available=excluded.subtitle_available,updated_at=excluded.updated_at''',
+                (account_uid, owner_uid, str(bvid)[:32], str(context)[:7000],
+                 int(subtitle_available), now()))
+
+    def get_video_memory(self, account_uid, owner_uid, *, max_age_hours=2):
+        cutoff = (datetime.now(timezone.utc) - timedelta(hours=max_age_hours)).isoformat()
+        with self.connect() as db:
+            row = db.execute('''SELECT bvid,context,subtitle_available,updated_at FROM video_memory
+                WHERE account_uid=? AND owner_uid=? AND updated_at>=?''',
+                (account_uid, owner_uid, cutoff)).fetchone()
+            return dict(row) if row else None
 
     def own_comment_by_root(self, aid, rpid):
         with self.connect() as db:

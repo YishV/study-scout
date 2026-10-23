@@ -35,6 +35,7 @@ class Settings:
     listen_max_per_cycle: int = 5
     listen_max_per_session: int = 20
     run_interval_minutes: int = 10
+    video_memory_hours: int = 2
 
     @property
     def interests(self) -> list[str]:
@@ -64,6 +65,7 @@ class Settings:
             listen_max_per_cycle=int(get('BILI_LISTEN_MAX_PER_CYCLE', '5')),
             listen_max_per_session=int(get('BILI_LISTEN_MAX_PER_SESSION', '20')),
             run_interval_minutes=int(get('BILI_RUN_INTERVAL_MINUTES', '10')),
+            video_memory_hours=int(get('BILI_VIDEO_MEMORY_HOURS', '2')),
         )
         if s.write_delay_min < 5 or s.write_delay_max < s.write_delay_min:
             raise ValueError('写操作等待必须至少 5 秒，最大值不得小于最小值')
@@ -79,4 +81,6 @@ class Settings:
             raise ValueError('BILI_LISTEN_MAX_PER_SESSION 必须为 1～20')
         if s.run_interval_minutes < 10:
             raise ValueError('BILI_RUN_INTERVAL_MINUTES 至少为 10')
+        if not 1 <= s.video_memory_hours <= 24:
+            raise ValueError('BILI_VIDEO_MEMORY_HOURS 必须为 1～24 小时')
         return s
