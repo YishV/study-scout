@@ -27,6 +27,18 @@ def test_defaults_and_storage(tmp_path):
     assert not store.record_action(candidate, 'like', 'ok')
 
 
+def test_real_round_skips_earlier_real_inspection_but_can_visit_dry_run_candidate(tmp_path):
+    store = Store(tmp_path / 'test.db')
+    store.init()
+    draft = store.start_run(dry_run=True)
+    store.add_candidate(draft, {'bvid': 'BVdraft', 'aid': 1})
+    real = store.start_run(dry_run=False)
+    checked = store.add_candidate(real, {'bvid': 'BVchecked', 'aid': 2})
+    store.record_skip(checked, 'no_subtitles')
+    assert not store.seen_bvid('BVdraft')
+    assert store.seen_bvid('BVchecked')
+
+
 def test_reply_record_can_only_be_claimed_once(tmp_path):
     store = Store(tmp_path / 'test.db')
     store.init()
@@ -194,6 +206,24 @@ async def test_runner_dry_run_never_writes(tmp_path):
         await runner.run_once()
     assert not any(p in ('x/web-interface/archive/like', 'x/v3/fav/resource/deal', 'x/v2/reply/add',
                          'web_im/v1/web_im/send_msg') for p, _ in calls)
+
+
+@pytest.mark.asyncio
+async def test_repeated_dry_run_does_not_redraft_same_video(tmp_path):
+    app, _ = make_fake_bili()
+    store = Store(tmp_path / 'test.db')
+    store.init()
+    judgment = {'worth_learning': True, 'score': 80, 'reason': '具体',
+                'takeaways': ['先复现'], 'risk': '无'}
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='https://fake.test') as http:
+        runner = Runner(Settings(topics='Python', dry_run=True), store, BiliClient(http),
+                        judge=lambda *args: asyncio.sleep(0, result=judgment))
+        await runner.run_once()
+        await runner.run_once()
+    runs = store.recent_runs()
+    assert runs[1]['candidates_count'] == 1
+    assert runs[0]['candidates_count'] == 0
+    assert not store.seen_bvid('BV1test')  # The same video is still eligible after switching to real mode.
 
 
 @pytest.mark.asyncio

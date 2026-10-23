@@ -14,10 +14,11 @@ from qrcode.constants import ERROR_CORRECT_L
 from .bili.auth import QRLogin
 from .bili.client import BiliClient
 from .config import Settings
-from .dashboard import serve_dashboard
+from .dashboard import dashboard_in_background, serve_dashboard
 from .instance_lock import AlreadyRunning, single_instance
 from .listener import MessageListener
-from .runner import Runner
+from .runner import Runner, WriteGate
+from .service import RunController, StudyService
 from .storage import Store
 
 log = logging.getLogger(__name__)
@@ -74,16 +75,16 @@ async def _run_command(command, settings, store, *, bvid=None, comment_id=None, 
         output('通知已确认。' if command == 'confirm-notification' else '未收到通知，真实互动保持锁定。')
         return 0
 
-    if command not in ('run', 'listen', 'verify-mention', 'verify-private-message', 'check-replies'):
+    if command not in ('serve', 'run', 'listen', 'verify-mention', 'verify-private-message', 'check-replies'):
         raise ValueError(f'未知命令：{command}')
     if command == 'verify-mention' and not bvid:
         raise ValueError('请提供测试视频 BV 号；此命令会发一条公开验证评论')
     if command == 'verify-private-message' and not settings.owner_uid:
         raise ValueError('请先在 .env 配置大号 BILI_OWNER_UID')
-    if command in ('run', 'listen', 'check-replies') and not settings.dry_run and not store.mention_ready(settings.owner_uid):
+    if command in ('serve', 'run', 'listen', 'check-replies') and not settings.dry_run and not store.mention_ready(settings.owner_uid):
         output('真实互动锁定：目标账号尚未确认收到 @ 通知；未开始扫码或运行。')
         return 1
-    needs_model = (command == 'run' and judge is None) or (command == 'listen' and not settings.dry_run)
+    needs_model = (command in ('serve', 'run') and judge is None) or (command == 'listen' and not settings.dry_run)
     if needs_model and not all((settings.model_base_url, settings.model_name, settings.model_api_key)):
         output('请先在 .env 配置 MODEL_BASE_URL、MODEL_NAME、MODEL_API_KEY；未开始扫码或运行。')
         return 1
@@ -100,7 +101,7 @@ async def _run_command(command, settings, store, *, bvid=None, comment_id=None, 
         bili = BiliClient(http)
         auth = QRLogin(http, bili)
         url = await auth.generate()
-        output('请用 B 站专用小号扫码登录。登录成功前不会执行本轮。')
+        output('请用 B 站专用小号扫码登录。登录成功前不会运行。')
         output(render_qr(url))
         output(f'若终端二维码无法识别，可打开临时登录链接：{url}')
         for _ in range(90):
@@ -122,7 +123,19 @@ async def _run_command(command, settings, store, *, bvid=None, comment_id=None, 
                                             'Study Scout 私信分享验证：请确认是否收到这条来自专用小号的测试私信。')
             output('私信接口已接受一条测试消息；请在目标账号检查实际送达。未发送点赞、收藏或评论。')
             return 0
-        runner = Runner(settings, store, bili, judge=judge, sleep=sleep, model_http=model)
+        write_gate = WriteGate(settings, sleep=sleep) if command == 'serve' else None
+        runner = Runner(settings, store, bili, judge=judge, sleep=sleep,
+                        model_http=model, write_gate=write_gate)
+        if command == 'serve':
+            controller = RunController(settings)
+            listener = (MessageListener(settings, store, bili, model_http=model,
+                                        sleep=sleep, output=output, write_gate=write_gate)
+                        if settings.owner_uid else None)
+            output('运行模式：' + ('DRY_RUN，只生成草稿。' if settings.dry_run else '真实互动。'))
+            with dashboard_in_background(store, controller, output=output):
+                service = StudyService(settings, store, runner, listener, controller, output=output)
+                await service.run_forever()
+            return 0 if controller.snapshot()['last_status'] in (None, 'done') else 1
         if command == 'listen':
             listener = MessageListener(settings, store, bili, model_http=model, sleep=sleep, output=output)
             output('运行模式：' + ('DRY_RUN，只读取新消息。' if settings.dry_run else '真实自动回复。'))
@@ -153,13 +166,13 @@ async def _run_command(command, settings, store, *, bvid=None, comment_id=None, 
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description='扫码登录后执行一轮筛选，或前台监听新消息')
-    parser.add_argument('command', nargs='?', choices=('run', 'listen', 'status', 'dashboard', 'verify-mention', 'verify-private-message', 'confirm-notification', 'notification-missing', 'check-replies'), default='run')
+    parser = argparse.ArgumentParser(description='扫码登录后持续运行，定时刷视频并监听新消息')
+    parser.add_argument('command', nargs='?', choices=('serve', 'run', 'listen', 'status', 'dashboard', 'verify-mention', 'verify-private-message', 'confirm-notification', 'notification-missing', 'check-replies'), default='serve')
     parser.add_argument('value', nargs='?', help='验证视频 BV 号或待确认的评论 ID')
     args = parser.parse_args(argv)
     if args.command in ('verify-mention', 'confirm-notification', 'notification-missing') and not args.value:
         parser.error('此命令需要视频 BV 号或评论 ID')
-    if args.command in ('run', 'listen', 'status', 'dashboard', 'verify-private-message', 'check-replies') and args.value:
+    if args.command in ('serve', 'run', 'listen', 'status', 'dashboard', 'verify-private-message', 'check-replies') and args.value:
         parser.error('此命令不接受额外参数')
     try:
         store = Store(Path('data/study-scout.sqlite3'))

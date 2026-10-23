@@ -10,13 +10,31 @@ from .judge import Judgment, judge_with_model
 log = logging.getLogger(__name__)
 
 
+class WriteGate:
+    """Keep one write delay across scheduled scans and message replies."""
+
+    def __init__(self, settings, *, sleep=asyncio.sleep):
+        self.settings, self.sleep = settings, sleep
+        self._last_write = False
+        self._lock = asyncio.Lock()
+
+    async def wait(self):
+        async with self._lock:
+            if self._last_write:
+                await self.sleep(random.uniform(self.settings.write_delay_min,
+                                                self.settings.write_delay_max))
+            self._last_write = True
+
+
 class Runner:
-    def __init__(self, settings, store, bili, *, judge=None, reply=None, sleep=asyncio.sleep, model_http=None):
+    def __init__(self, settings, store, bili, *, judge=None, reply=None, sleep=asyncio.sleep,
+                 model_http=None, write_gate=None):
         self.settings, self.store, self.bili = settings, store, bili
         self.judge = judge
         self.reply = reply
         self.sleep = sleep
         self.model_http = model_http
+        self.write_gate = write_gate
         self.lock = asyncio.Lock()
         self.stop_requested = False
         self.step = '空闲'
@@ -28,6 +46,11 @@ class Runner:
     async def _wait_write(self):
         if self.stop_requested:
             raise asyncio.CancelledError()
+        if self.write_gate is not None:
+            await self.write_gate.wait()
+            if self.stop_requested:
+                raise asyncio.CancelledError()
+            return
         if self._last_write:
             await self.sleep(random.uniform(self.settings.write_delay_min, self.settings.write_delay_max))
         if self.stop_requested:
@@ -40,13 +63,13 @@ class Runner:
             return result if isinstance(result, Judgment) else Judgment.model_validate(result)
         return await judge_with_model(self.model_http, self.settings, detail, transcript)
 
-    async def run_once(self):
+    async def run_once(self, *, check_replies=True):
         if self.lock.locked():
             raise RuntimeError('已有一轮运行中')
         async with self.lock:
             self.stop_requested = False
             self._last_write = False
-            run_id = self.store.start_run()
+            run_id = self.store.start_run(dry_run=self.settings.dry_run)
             status, error = 'done', None
             selected = considered = 0
             try:
@@ -61,7 +84,7 @@ class Runner:
                     if self.stop_requested or considered >= self.settings.batch_limit:
                         break
                     bvid = item.get('bvid') or item.get('bvid_str')
-                    if not bvid or self.store.seen_bvid(bvid):
+                    if not bvid or self.store.seen_bvid(bvid, include_drafts=self.settings.dry_run):
                         continue
                     considered += 1
                     self.step = f'读取 {bvid}'
@@ -150,7 +173,7 @@ class Runner:
                         except Exception as exc:
                             self.store.update_action(candidate_id, kind, 'failed', str(getattr(exc, 'code', 'error')))
                             raise
-                if not self.settings.dry_run and not self.stop_requested:
+                if check_replies and not self.settings.dry_run and not self.stop_requested:
                     await self.check_replies()
                 if self.stop_requested:
                     status = 'stopped'
@@ -179,7 +202,7 @@ class Runner:
             if self.store.seen_bvid(bvid):
                 raise ValueError('该视频已有操作记录')
             detail = await self.bili.detail(bvid)
-            run_id = self.store.start_run()
+            run_id = self.store.start_run(dry_run=False)
             candidate_id = self.store.add_candidate(run_id, {'bvid': bvid, 'aid': detail['aid'], 'cid': detail['cid'], 'title': detail['title']})
             message = build_comment(self.settings.owner_name, '这条是学习提醒通知验证，请确认是否收到站内提醒。')
             self.store.record_action(candidate_id, 'mention_test', 'pending')

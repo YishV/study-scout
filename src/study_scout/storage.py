@@ -22,7 +22,7 @@ class Store:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self.connect() as db:
             db.executescript('''
-            CREATE TABLE IF NOT EXISTS runs (id INTEGER PRIMARY KEY, started_at TEXT, finished_at TEXT, status TEXT, candidates_count INTEGER DEFAULT 0, selected_count INTEGER DEFAULT 0, actions_ok INTEGER DEFAULT 0, actions_failed INTEGER DEFAULT 0, error_code TEXT);
+            CREATE TABLE IF NOT EXISTS runs (id INTEGER PRIMARY KEY, started_at TEXT, finished_at TEXT, status TEXT, candidates_count INTEGER DEFAULT 0, selected_count INTEGER DEFAULT 0, actions_ok INTEGER DEFAULT 0, actions_failed INTEGER DEFAULT 0, error_code TEXT, dry_run INTEGER);
             CREATE TABLE IF NOT EXISTS candidates (id INTEGER PRIMARY KEY, run_id INTEGER REFERENCES runs(id), bvid TEXT, aid INTEGER, cid INTEGER, title TEXT, description TEXT, author TEXT, duration INTEGER, pubdate INTEGER, subtitle_available INTEGER DEFAULT 0, skip_reason TEXT, seen_at TEXT, UNIQUE(run_id,bvid));
             CREATE TABLE IF NOT EXISTS judgments (id INTEGER PRIMARY KEY, candidate_id INTEGER REFERENCES candidates(id), worth_learning INTEGER, score INTEGER, reason TEXT, takeaways_json TEXT, risk TEXT, model TEXT, raw_json TEXT, created_at TEXT);
             CREATE TABLE IF NOT EXISTS actions (id INTEGER PRIMARY KEY, candidate_id INTEGER REFERENCES candidates(id), kind TEXT, status TEXT, request_json TEXT, response_json TEXT, error_code TEXT, created_at TEXT, UNIQUE(candidate_id,kind));
@@ -35,10 +35,14 @@ class Store:
             columns = {row['name'] for row in db.execute('PRAGMA table_info(candidates)')}
             if 'skip_reason' not in columns:
                 db.execute('ALTER TABLE candidates ADD COLUMN skip_reason TEXT')
+            run_columns = {row['name'] for row in db.execute('PRAGMA table_info(runs)')}
+            if 'dry_run' not in run_columns:
+                db.execute('ALTER TABLE runs ADD COLUMN dry_run INTEGER')
 
-    def start_run(self):
+    def start_run(self, *, dry_run=None):
         with self.connect() as db:
-            return db.execute('INSERT INTO runs(started_at,status) VALUES (?,?)', (now(), 'running')).lastrowid
+            return db.execute('INSERT INTO runs(started_at,status,dry_run) VALUES (?,?,?)',
+                              (now(), 'running', None if dry_run is None else int(dry_run))).lastrowid
 
     def finish_run(self, run_id, status, error_code=None):
         with self.connect() as db:
@@ -49,9 +53,14 @@ class Store:
             db.execute('INSERT OR IGNORE INTO candidates(run_id,bvid,aid,cid,title,description,author,duration,pubdate,seen_at) VALUES (?,?,?,?,?,?,?,?,?,?)', (run_id, item['bvid'], item.get('aid'), item.get('cid'), item.get('title'), item.get('description'), item.get('author'), item.get('duration'), item.get('pubdate'), now()))
             return db.execute('SELECT id FROM candidates WHERE run_id=? AND bvid=?', (run_id, item['bvid'])).fetchone()['id']
 
-    def seen_bvid(self, bvid):
+    def seen_bvid(self, bvid, *, include_drafts=False):
         with self.connect() as db:
-            return bool(db.execute("SELECT 1 FROM actions a JOIN candidates c ON c.id=a.candidate_id WHERE c.bvid=? AND a.kind NOT IN ('draft','judge') LIMIT 1", (bvid,)).fetchone())
+            if include_drafts:
+                return bool(db.execute('SELECT 1 FROM candidates WHERE bvid=? LIMIT 1', (bvid,)).fetchone())
+            return bool(db.execute('''SELECT 1 FROM candidates c JOIN runs r ON r.id=c.run_id
+                LEFT JOIN actions a ON a.candidate_id=c.id
+                WHERE c.bvid=? AND (r.dry_run=0 OR a.kind NOT IN ('draft','judge')) LIMIT 1''',
+                (bvid,)).fetchone())
 
     def record_judgment(self, candidate_id, judgment, model):
         with self.connect() as db:

@@ -70,6 +70,19 @@ def test_existing_database_gets_skip_reason_column_without_losing_rows(tmp_path)
     assert store.dashboard_data()['videos'][0]['bvid'] == 'BVold'
 
 
+def test_existing_database_gets_run_mode_column_without_losing_history(tmp_path):
+    store = Store(tmp_path / 'test.db')
+    store.init()
+    run_id = store.start_run()
+    store.finish_run(run_id, 'done')
+    with store.connect() as db:
+        db.execute('ALTER TABLE runs DROP COLUMN dry_run')
+
+    store.init()
+    assert store.recent_runs()[0]['id'] == run_id
+    assert store.recent_runs()[0]['dry_run'] is None
+
+
 def test_dashboard_http_is_local_read_only_and_does_not_expose_secrets(tmp_path):
     store = Store(tmp_path / 'test.db')
     store.init()
@@ -86,7 +99,7 @@ def test_dashboard_http_is_local_read_only_and_does_not_expose_secrets(tmp_path)
             assert response.getheader('Cache-Control') == 'no-store'
             assert 'MODEL_API_KEY' not in body
             connection.request('POST', '/')
-            assert connection.getresponse().status == 501
+            assert connection.getresponse().status == 403
             connection.close()
 
             hostile = http.client.HTTPConnection('127.0.0.1', server.server_port, timeout=3)

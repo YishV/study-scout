@@ -1,5 +1,8 @@
-"""Local, read-only dashboard for completed and in-progress runs."""
+"""Local dashboard: read-only history and an optional guarded run button."""
 
+import secrets
+import threading
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from html import escape
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -96,7 +99,7 @@ def _video_card(video):
             f'{judgment}<div class="chips">{chips}</div>{comments}</article>')
 
 
-def render_dashboard(data):
+def render_dashboard(data, controller=None):
     """Render escaped HTML from a bounded local SQLite snapshot."""
     totals = data['totals']
     stats = [('已运行轮次', totals['runs']), ('检查的视频', totals['videos']),
@@ -117,21 +120,52 @@ def render_dashboard(data):
     heading = f'第 {selected["id"]} 轮的视频' if selected else '视频记录'
     run_note = (f'开始：{_time(selected["started_at"])} · 结束：{_time(selected["finished_at"])}'
                 + (f' · 错误：{_safe(selected["error_code"])}' if selected['error_code'] else '')) if selected else ''
+    controls = ''
+    if controller is not None:
+        state = controller.snapshot()
+        mode = 'DRY_RUN · 只生成草稿' if state['dry_run'] else '真实互动'
+        activity = {'idle': '等待下一轮', 'running': '正在刷视频', 'listening': '正在检查消息',
+                    'stopped': '已停止'}.get(state['state'], state['state'])
+        if state['pending']:
+            activity = '手动轮次已排队'
+        disabled = ' disabled' if state['state'] != 'idle' or state['pending'] else ''
+        next_at = _time(state['next_run_at'])
+        last_run = (f'上轮 #{_safe(state["last_run_id"])}：{_safe(_RUN_STATUS.get(state["last_status"], state["last_status"]))}'
+                    if state['last_run_id'] else '尚未开始')
+        last_error = f' · 错误：{_safe(state["error"])}' if state['error'] else ''
+        controls = (f'<section class="panel" style="margin-bottom:20px"><h2>运行控制</h2>'
+                    f'<p><strong>{_safe(mode)}</strong> · {_safe(activity)} · 自动间隔 {_safe(state["interval_minutes"])} 分钟'
+                    f' · 下次计划 {_safe(next_at)}</p><p class="muted">{last_run}{last_error}</p>'
+                    f'<form action="/run-once" method="post"><input type="hidden" name="token" value="{_safe(controller.token)}">'
+                    f'<button class="refresh" type="submit"{disabled}>手动刷一轮</button></form>'
+                    f'<p class="muted">手动操作与定时轮次共用限速和风控；运行中不能重复触发。'
+                    f'{"消息回复已达本次上限。" if state["listener_paused"] else ""}</p></section>')
+    subtitle = '本机运行记录 · 可手动触发' if controller is not None else '本机运行记录 · 只读展示'
     return (f'<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">'
             f'<title>Study Scout · 运行记录</title><style>{_STYLE}</style></head><body><main class="wrap">'
-            f'<header><div><h1>Study Scout</h1><p class="sub">本机运行记录 · 只读展示</p></div><a class="refresh" href="/">刷新数据</a></header>'
-            f'<section class="stats">{stat_html}</section><div class="grid"><aside class="panel"><h2>运行记录</h2><div class="runs">{run_links}</div>'
+            f'<header><div><h1>Study Scout</h1><p class="sub">{subtitle}</p></div><a class="refresh" href="/">刷新数据</a></header>'
+            f'{controls}<section class="stats">{stat_html}</section><div class="grid"><aside class="panel"><h2>运行记录</h2><div class="runs">{run_links}</div>'
             f'<div class="paging">{previous}{following}</div></aside><section class="panel"><h2>{heading}</h2><p class="sub">{run_note}</p>{video_html}'
             f'<p class="note">“接口已接受”仅表示 B 站返回成功；评论公开可见、@ 通知和私信送达需在目标账号核对。刷新页面读取本地数据库，不会访问 B 站或触发互动。</p>'
             f'</section></div></main></body></html>')
 
 
-def make_handler(store):
+def make_handler(store, controller=None):
     class DashboardHandler(BaseHTTPRequestHandler):
+        def _local_host(self):
+            return self.headers.get('Host', '') in (f'127.0.0.1:{self.server.server_port}',
+                                                    f'localhost:{self.server.server_port}')
+
+        def _empty_response(self, status, *, location=None):
+            self.send_response(status)
+            if location:
+                self.send_header('Location', location)
+            self.send_header('Content-Length', '0')
+            self.send_header('Cache-Control', 'no-store')
+            self.end_headers()
+
         def do_GET(self):
-            host = self.headers.get('Host', '')
-            if host not in (f'127.0.0.1:{self.server.server_port}',
-                            f'localhost:{self.server.server_port}'):
+            if not self._local_host():
                 self.send_error(403)
                 return
             parsed = urlsplit(self.path)
@@ -145,16 +179,47 @@ def make_handler(store):
             except ValueError:
                 self.send_error(400)
                 return
-            body = render_dashboard(store.dashboard_data(page, run_id)).encode('utf-8')
+            body = render_dashboard(store.dashboard_data(page, run_id), controller).encode('utf-8')
             self.send_response(200)
             self.send_header('Content-Type', 'text/html; charset=utf-8')
             self.send_header('Content-Length', str(len(body)))
             self.send_header('Cache-Control', 'no-store')
             self.send_header('X-Content-Type-Options', 'nosniff')
             self.send_header('X-Frame-Options', 'DENY')
-            self.send_header('Content-Security-Policy', "default-src 'none'; style-src 'unsafe-inline'")
+            self.send_header('Content-Security-Policy', "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'")
             self.end_headers()
             self.wfile.write(body)
+
+        def do_POST(self):
+            if controller is None or self.path != '/run-once' or not self._local_host():
+                self._empty_response(403)
+                return
+            allowed_origin = (f'http://127.0.0.1:{self.server.server_port}',
+                              f'http://localhost:{self.server.server_port}')
+            if (self.headers.get('Origin') not in allowed_origin
+                    or self.headers.get('Content-Type', '').split(';', 1)[0] != 'application/x-www-form-urlencoded'):
+                self._empty_response(403)
+                return
+            try:
+                length = int(self.headers.get('Content-Length', '0'))
+            except ValueError:
+                length = 0
+            if not 1 <= length <= 1024:
+                self._empty_response(403)
+                return
+            try:
+                fields = parse_qs(self.rfile.read(length).decode('utf-8'), strict_parsing=True)
+            except (ValueError, UnicodeDecodeError):
+                self._empty_response(403)
+                return
+            token = fields.get('token', [''])[0]
+            if not secrets.compare_digest(token, controller.token):
+                self._empty_response(403)
+                return
+            if not controller.request_run():
+                self._empty_response(409)
+                return
+            self._empty_response(303, location='/')
 
         def log_message(self, _format, *_args):
             pass
@@ -167,3 +232,17 @@ def serve_dashboard(store, *, port=8765, output=print):
         output(f'只读展示页：http://127.0.0.1:{server.server_port}/')
         output('保持此终端开启；刷新网页可查看新记录，按 Ctrl+C 关闭。')
         server.serve_forever(poll_interval=0.5)
+
+
+@contextmanager
+def dashboard_in_background(store, controller, *, port=8765, output=print):
+    """Keep the local page available while the async scheduler runs."""
+    with ThreadingHTTPServer(('127.0.0.1', port), make_handler(store, controller)) as server:
+        worker = threading.Thread(target=server.serve_forever, kwargs={'poll_interval': 0.2}, daemon=True)
+        worker.start()
+        output(f'运行页面：http://127.0.0.1:{server.server_port}/')
+        try:
+            yield server
+        finally:
+            server.shutdown()
+            worker.join(timeout=2)
