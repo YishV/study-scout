@@ -27,6 +27,17 @@ def test_defaults_and_storage(tmp_path):
     assert not store.record_action(candidate, 'like', 'ok')
 
 
+def test_reply_record_can_only_be_claimed_once(tmp_path):
+    store = Store(tmp_path / 'test.db')
+    store.init()
+    run = store.start_run()
+    candidate = store.add_candidate(run, {'bvid': 'BVtest', 'aid': 1, 'cid': 2, 'title': 'test'})
+    comment = store.save_comment(candidate, 55, '@示例用户 test', 42, True, 'ok')
+    assert store.save_reply(comment, 301, None, '第一次', 'pending') is True
+    assert store.save_reply(comment, 301, None, '第二次', 'pending') is False
+    assert store.reply_count(comment) == 1
+
+
 def test_missing_notification_cannot_be_confirmed_later(tmp_path):
     store = Store(tmp_path / 'test.db')
     store.init()
@@ -80,15 +91,6 @@ async def test_fake_service_and_risk_control():
             await bili.like(1)
         assert e.value.stop_run
     assert calls[-1][0] == 'x/web-interface/archive/like'
-
-
-@pytest.mark.asyncio
-async def test_exact_name_uid_lookup_with_fake_service():
-    app, _ = make_fake_bili()
-    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='https://fake.test') as http:
-        bili = BiliClient(http, 'SESSDATA=x; bili_jct=csrf; DedeUserID=99')
-        assert await bili.find_users('示例用户') == [{'uid': 42, 'name': '示例用户'}]
-        assert await bili.find_users('其他用户') == []
 
 
 @pytest.mark.asyncio

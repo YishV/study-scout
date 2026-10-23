@@ -202,7 +202,8 @@ class Runner:
                     log.warning('回复生成失败: %s', exc)
                     continue
                 # Claim before network call, including failures, to avoid a retry storm.
-                self.store.save_reply(comment['id'], parent, None, message, 'pending')
+                if not self.store.save_reply(comment['id'], parent, None, message, 'pending'):
+                    continue
                 await self._wait_write()
                 try:
                     result = await self.bili.comment(comment['aid'], message, root=comment['rpid'], parent=parent)

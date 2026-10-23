@@ -69,10 +69,6 @@ class BiliClient:
                 log.warning('发现接口失败: %s', exc)
         return []
 
-    async def find_users(self, exact_name):
-        data = (await self.signed('/x/web-interface/wbi/search/type', {'search_type': 'bili_user', 'keyword': exact_name}))['data']
-        return [{'uid': int(item['mid']), 'name': item['uname']} for item in (data.get('result') or []) if item.get('uname') == exact_name and item.get('mid')]
-
     async def detail(self, bvid):
         return (await self.request('GET', '/x/web-interface/view', params={'bvid': bvid}))['data']
 

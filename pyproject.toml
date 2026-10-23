@@ -6,10 +6,10 @@ build-backend = "setuptools.build_meta"
 name = "study-scout"
 version = "0.1.0"
 requires-python = ">=3.12"
-dependencies = ["fastapi", "uvicorn", "jinja2", "httpx", "pydantic", "python-multipart", "qrcode"]
+dependencies = ["httpx", "pydantic", "qrcode"]
 
 [project.optional-dependencies]
-test = ["pytest", "pytest-asyncio"]
+test = ["pytest", "pytest-asyncio", "fastapi", "python-multipart"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

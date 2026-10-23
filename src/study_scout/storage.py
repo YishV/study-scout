@@ -107,7 +107,8 @@ class Store:
 
     def save_reply(self, comment_id, parent_rpid, reply_rpid, message, status):
         with self.connect() as db:
-            db.execute('INSERT OR IGNORE INTO replies(comment_id,parent_rpid,reply_rpid,message,status,created_at) VALUES (?,?,?,?,?,?)', (comment_id, parent_rpid, reply_rpid, message, status, now()))
+            result = db.execute('INSERT OR IGNORE INTO replies(comment_id,parent_rpid,reply_rpid,message,status,created_at) VALUES (?,?,?,?,?,?)', (comment_id, parent_rpid, reply_rpid, message, status, now()))
+            return bool(result.rowcount)
 
     def update_reply(self, comment_id, parent_rpid, reply_rpid, status):
         with self.connect() as db:
@@ -126,14 +127,6 @@ class Store:
             return [dict(r) for r in db.execute('''SELECT c.bvid,c.title,c.subtitle_available,j.score,j.reason,a.kind,a.status,a.error_code
                 FROM candidates c LEFT JOIN judgments j ON j.candidate_id=c.id
                 LEFT JOIN actions a ON a.candidate_id=c.id WHERE c.run_id=? ORDER BY c.id,a.id''', (run_id,))]
-
-    def recent_comments(self):
-        with self.connect() as db:
-            return [dict(r) for r in db.execute('SELECT rpid,message,mention_uid,mention_verified,notification_confirmed,status FROM comments ORDER BY id DESC LIMIT 10')]
-
-    def recent_replies(self):
-        with self.connect() as db:
-            return [dict(r) for r in db.execute('SELECT parent_rpid,reply_rpid,message,status FROM replies ORDER BY id DESC LIMIT 10')]
 
     def update_run_counts(self, run_id, candidates, selected):
         with self.connect() as db:
