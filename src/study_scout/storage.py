@@ -128,6 +128,11 @@ class Store:
         with self.connect() as db:
             return [dict(r) for r in db.execute('SELECT comments.*,candidates.aid FROM comments JOIN candidates ON candidates.id=comments.candidate_id WHERE comments.status=\'ok\'')]
 
+    def recent_comment_count(self, *, hours=24):
+        cutoff = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
+        with self.connect() as db:
+            return db.execute('SELECT count(*) FROM comments WHERE created_at>=?', (cutoff,)).fetchone()[0]
+
     def reply_count(self, comment_id):
         with self.connect() as db:
             return db.execute('SELECT count(*) FROM replies WHERE comment_id=?', (comment_id,)).fetchone()[0]

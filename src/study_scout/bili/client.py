@@ -211,23 +211,23 @@ class BiliClient:
             data.update(root=root, parent=parent)
         return await self.request('POST', '/x/v2/reply/add', data=data, auth=True)
 
+    async def _public_get(self, path, params):
+        response = await self.public_http.get(
+            path, params=params,
+            headers={**_BASE_HEADERS, 'Cookie': '', 'Referer': 'https://www.bilibili.com/'})
+        if response.status_code == 412:
+            raise BiliError(412, '风控')
+        response.raise_for_status()
+        return response.json()
+
     async def public_comment_visible(self, aid, rpid):
-        """Check the comment anonymously. True=public, False=not found, None=audit blocked."""
+        """Check a top-level comment anonymously. True=public, False=not found, None=audit blocked."""
         if not rpid:
             return False
 
-        async def public_get(path, params):
-            response = await self.public_http.get(
-                path, params=params,
-                headers={**_BASE_HEADERS, 'Cookie': '', 'Referer': 'https://www.bilibili.com/'})
-            if response.status_code == 412:
-                raise BiliError(412, '风控')
-            response.raise_for_status()
-            return response.json()
-
         # The exact root lookup is authoritative and avoids the hot/latest page.
-        payload = await public_get('/x/v2/reply/reply',
-                                   {'type': 1, 'oid': aid, 'root': rpid, 'pn': 1, 'ps': 20})
+        payload = await self._public_get('/x/v2/reply/reply',
+                                         {'type': 1, 'oid': aid, 'root': rpid, 'pn': 1, 'ps': 20})
         code = payload.get('code', 0)
         if code == 0 and str(((payload.get('data') or {}).get('root') or {}).get('rpid')) == str(rpid):
             return True
@@ -237,11 +237,27 @@ class BiliClient:
             return None
         if code != 0:
             raise BiliError(code, payload.get('message', ''))
-        payload = await public_get('/x/v2/reply/main',
-                                   {'type': 1, 'oid': aid, 'mode': 2, 'next': 0, 'ps': 20})
+        payload = await self._public_get('/x/v2/reply/main',
+                                         {'type': 1, 'oid': aid, 'mode': 2, 'next': 0, 'ps': 20})
         code = payload.get('code', 0)
         if code in (-352, 12006):
             return None if code == -352 else False
+        if code != 0:
+            raise BiliError(code, payload.get('message', ''))
+        replies = (payload.get('data') or {}).get('replies') or []
+        return any(str(reply.get('rpid')) == str(rpid) for reply in replies)
+
+    async def public_reply_visible(self, aid, root, rpid):
+        """Check a sub-reply inside its root thread. False also covers a hidden root."""
+        if not rpid or not root:
+            return False
+        payload = await self._public_get('/x/v2/reply/reply',
+                                         {'type': 1, 'oid': aid, 'root': root, 'pn': 1, 'ps': 20})
+        code = payload.get('code', 0)
+        if code == 12006:
+            return False
+        if code == -352:
+            return None
         if code != 0:
             raise BiliError(code, payload.get('message', ''))
         replies = (payload.get('data') or {}).get('replies') or []

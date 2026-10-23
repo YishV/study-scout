@@ -92,6 +92,7 @@ B 站的「@我的」列表走 `/x/msgfeed/at`，顶层评论里的 @ 会出现�
 - 首次启动只记录当前位置，不回复历史消息。
 - `BILI_LISTENER_MAX_AGE_HOURS` 之外的通知只推进游标，不生成回复。
 - 每条评论最多回复 `BILI_COMMENT_MAX_REPLIES` 次。
+- 每轮视频最多发表 `BILI_COMMENT_MAX_PER_ROUND` 条公开评论，默认 1 条；滚动 24 小时最多 `BILI_COMMENT_MAX_PER_DAY` 条，默认 3 条；其余视频只点赞、收藏和私信。
 - 每次登录最多自动回复 `BILI_LISTEN_MAX_PER_SESSION` 条。
 - 发送前先写 `dm_replies` / `mention_replies` / `replies` 占位，失败也不重发。
 
@@ -114,6 +115,8 @@ B 站的「@我的」列表走 `/x/msgfeed/at`，顶层评论里的 @ 会出现�
 | `unchecked` | 未回查或回查不可用 | 仅记录 |
 
 B 站对低等级/低信任账号的评论会静默隐藏，无法通过接口规避。程序通过账号等级预检、匿名回查和停止后续评论，避免把“接口成功”误报为“他人可见”。
+
+大号的 @ 回复发出后，程序会按 `root` 线程回查这条回复；不可见时自动改发私信给大号，保证回复内容能送达。私信也失败时只记录，不重试。
 
 ## 7. 存储
 
@@ -150,6 +153,7 @@ accounts          预留
 兴趣与账号   STUDY_TOPICS, STUDY_PERSONA, BILI_OWNER_UID, BILI_OWNER_NAME, BILI_SHARE_METHOD
 互动门槛     BILI_LIKE_MIN_SCORE, BILI_FAVORITE_MIN_SCORE, BILI_FAV_FOLDER_ID
 运行节奏     BILI_BATCH_LIMIT, BILI_RUN_INTERVAL_MINUTES, BILI_COMMENT_MAX_REPLIES,
+             BILI_COMMENT_MAX_PER_ROUND, BILI_COMMENT_MAX_PER_DAY,
              BILI_LISTEN_INTERVAL_SECONDS, BILI_LISTEN_MAX_PER_CYCLE,
              BILI_LISTEN_MAX_PER_SESSION, BILI_LISTENER_MAX_AGE_HOURS,
              BILI_VIDEO_MEMORY_HOURS, BILI_WRITE_DELAY_MIN/MAX

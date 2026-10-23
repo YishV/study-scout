@@ -23,6 +23,8 @@ class Settings:
     fav_folder_id: int = 0
     batch_limit: int = 5
     max_replies: int = 3
+    comment_max_per_round: int = 1
+    comment_max_per_day: int = 3
     write_delay_min: float = 5
     write_delay_max: float = 20
     model_base_url: str = ''
@@ -57,6 +59,8 @@ class Settings:
             fav_folder_id=int(get('BILI_FAV_FOLDER_ID') or 0),
             batch_limit=min(5, max(1, int(get('BILI_BATCH_LIMIT', '5')))),
             max_replies=min(3, max(0, int(get('BILI_COMMENT_MAX_REPLIES', '3')))),
+            comment_max_per_round=min(5, max(0, int(get('BILI_COMMENT_MAX_PER_ROUND', '1')))),
+            comment_max_per_day=min(50, max(0, int(get('BILI_COMMENT_MAX_PER_DAY', '3')))),
             write_delay_min=float(get('BILI_WRITE_DELAY_MIN', '5')),
             write_delay_max=float(get('BILI_WRITE_DELAY_MAX', '20')),
             model_base_url=get('MODEL_BASE_URL', ''),

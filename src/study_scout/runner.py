@@ -90,6 +90,8 @@ class Runner:
             run_id = self.store.start_run(dry_run=self.settings.dry_run)
             status, error = 'done', None
             selected = considered = 0
+            comments_sent = 0
+            comments_today = self.store.recent_comment_count(hours=24)
             log.info('第 %s 轮开始%s', run_id, '（DRY_RUN，只生成草稿）' if self.settings.dry_run else '')
             try:
                 await self._check_account()
@@ -211,6 +213,18 @@ class Runner:
                                                      {'reason': self.comments_blocked})
                             log.info('跳过 %s 的评论：%s', bvid, self.comments_blocked)
                             continue
+                        if kind == 'comment' and comments_sent >= self.settings.comment_max_per_round:
+                            reason = f'本轮评论上限 {self.settings.comment_max_per_round} 条'
+                            self.store.record_action(candidate_id, 'comment', 'skipped',
+                                                     {'reason': reason})
+                            log.info('跳过 %s 的评论：%s', bvid, reason)
+                            continue
+                        if kind == 'comment' and comments_today >= self.settings.comment_max_per_day:
+                            reason = f'24 小时内评论上限 {self.settings.comment_max_per_day} 条'
+                            self.store.record_action(candidate_id, 'comment', 'skipped',
+                                                     {'reason': reason})
+                            log.info('跳过 %s 的评论：%s', bvid, reason)
+                            continue
                         # Reserve the action before sending. Ambiguous network failures must never cause a repeat.
                         self.store.record_action(candidate_id, kind, 'pending')
                         self.step = f'{kind} {bvid}'
@@ -240,6 +254,8 @@ class Runner:
                                                                      verified, 'mention_unverified' if mention_missing else 'ok')
                                 log.info('评论已提交 %s：RPID %s，@ 匹配：%s', bvid, rpid,
                                          '是' if verified else ('否' if mention_owner else '未使用'))
+                                comments_sent += 1
+                                comments_today += 1
                                 if mention_missing:
                                     raise RuntimeError('评论未形成真实 @，已停止本轮')
                             else:

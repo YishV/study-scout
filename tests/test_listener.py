@@ -299,6 +299,46 @@ async def test_owner_video_link_without_subtitles_gets_honest_answer(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_hidden_mention_reply_falls_back_to_private_message(tmp_path):
+    fake, calls = make_fake_bili()
+    store, _ = ready_store(tmp_path)
+    fake.state.dm_messages.append(dm(10))
+    settings = Settings(owner_uid=42, dry_run=False, model_name='fake',
+                        model_base_url='https://model.test', model_api_key='fake')
+    async with (httpx.AsyncClient(transport=httpx.ASGITransport(app=fake), base_url='https://fake.test') as http,
+                httpx.AsyncClient(transport=httpx.MockTransport(
+                    lambda _: httpx.Response(200, json={'choices': [{'message': {'content': '先看字幕里的最小复现。'}}]}))) as model):
+        listener = MessageListener(settings, store, BiliClient(http, 'SESSDATA=x; bili_jct=csrf'),
+                                   model_http=model, sleep=lambda _: asyncio.sleep(0))
+        await listener.poll_once()
+        fake.state.at_notifications.append(at_notice(11))
+        assert await listener.poll_once() == 1
+    writes = [form for path, form in calls if path.endswith('/send_msg')]
+    assert len(writes) == 1
+    text = json.loads(writes[0]['msg[content]'])['content']
+    assert '公开回复被 B 站隐藏' in text
+    assert '先看字幕里的最小复现' in text
+
+
+@pytest.mark.asyncio
+async def test_visible_mention_reply_does_not_send_fallback_dm(tmp_path):
+    fake, calls = make_fake_bili(public_reply_visible=True)
+    store, _ = ready_store(tmp_path)
+    fake.state.dm_messages.append(dm(10))
+    settings = Settings(owner_uid=42, dry_run=False, model_name='fake',
+                        model_base_url='https://model.test', model_api_key='fake')
+    async with (httpx.AsyncClient(transport=httpx.ASGITransport(app=fake), base_url='https://fake.test') as http,
+                httpx.AsyncClient(transport=httpx.MockTransport(
+                    lambda _: httpx.Response(200, json={'choices': [{'message': {'content': '先看字幕里的最小复现。'}}]}))) as model):
+        listener = MessageListener(settings, store, BiliClient(http, 'SESSDATA=x; bili_jct=csrf'),
+                                   model_http=model, sleep=lambda _: asyncio.sleep(0))
+        await listener.poll_once()
+        fake.state.at_notifications.append(at_notice(11))
+        assert await listener.poll_once() == 1
+    assert not any(path.endswith('/send_msg') for path, _ in calls)
+
+
+@pytest.mark.asyncio
 async def test_owner_at_in_at_feed_replies_to_top_level_comment(tmp_path):
     fake, calls = make_fake_bili()
     store, _ = ready_store(tmp_path)

@@ -3,7 +3,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 
-def make_fake_bili(*, fail_code: int = 0, dm_fail_code: int = 0, mention_uid: int = 42, subtitles: bool = True, poll_codes: tuple[int, ...] = (0,), public_comment_visible: bool = True, public_comment_in_latest: bool = True, public_fail_code: int = 0):
+def make_fake_bili(*, fail_code: int = 0, dm_fail_code: int = 0, mention_uid: int = 42, subtitles: bool = True, poll_codes: tuple[int, ...] = (0,), public_comment_visible: bool = True, public_comment_in_latest: bool = True, public_reply_visible: bool = False, public_fail_code: int = 0):
     app = FastAPI()
     calls: list[tuple[str, dict]] = []
     poll_index = 0
@@ -76,7 +76,9 @@ def make_fake_bili(*, fail_code: int = 0, dm_fail_code: int = 0, mention_uid: in
             if form.get('root') == '201':
                 return ({'code': 0, 'data': {'root': {'rpid': 201}, 'replies': []}}
                         if public_comment_visible else {'code': 12006, 'message': '没有该评论'})
-            return {'code': 0, 'data': {'replies': [{'rpid': 301, 'member': {'mid': 8}, 'content': {'message': '怎么复现？'}}]}}
+            return {'code': 0, 'data': {'replies': [{'rpid': 401 if public_reply_visible else 301,
+                                                      'member': {'mid': 8},
+                                                      'content': {'message': '怎么复现？'}}]}}
         if path == 'x/v2/reply/main':
             form['_has_cookie'] = bool(request.headers.get('cookie'))
             if public_fail_code:

@@ -330,6 +330,78 @@ async def test_public_comment_visibility_is_recorded_and_hidden_comment_blocks_m
 
 
 @pytest.mark.asyncio
+async def test_comment_limit_per_round_skips_extra_comments(tmp_path):
+    comments, messages = [], []
+
+    class TwoVideos:
+        async def identity(self):
+            return {'uid': 99, 'name': '小号', 'level': 3, 'mobile_verified': True}
+
+        async def discover(self, _interests):
+            return [{'bvid': 'BVfirst'}, {'bvid': 'BVsecond'}]
+
+        async def detail(self, bvid):
+            index = 1 if bvid == 'BVfirst' else 2
+            return {'bvid': bvid, 'aid': index, 'cid': index + 10, 'title': bvid,
+                    'owner': {'name': '作者' + bvid}}
+
+        async def subtitles(self, _aid, _cid):
+            return '先复现，再定位。'
+
+        async def comment(self, aid, message, **_kwargs):
+            comments.append((aid, message))
+            return {'code': 0, 'data': {'reply': {'rpid': 300 + aid}}}
+
+        async def public_comment_visible(self, _aid, _rpid):
+            return True
+
+        async def send_private_message(self, _sender, _owner, _message):
+            messages.append(_message)
+
+        async def like(self, _aid):
+            raise AssertionError('不应点赞')
+
+        async def favorite(self, _aid, _folder):
+            raise AssertionError('不应收藏')
+
+    store = Store(tmp_path / 'test.db')
+    store.init()
+    settings = Settings(topics='Python', owner_uid=42, owner_name='示例用户', dry_run=False,
+                        require_notification_confirmation=False, comment_max_per_round=1)
+    runner = Runner(settings, store, TwoVideos(),
+                    judge=lambda *_: asyncio.sleep(0, result={
+                        'worth_recommending': True, 'score': 80, 'reason': '有具体方法',
+                        'takeaways': ['先复现'], 'risk': '无', 'comment_draft': '方法很实用'}),
+                    sleep=lambda _: asyncio.sleep(0))
+    await runner.run_once(check_replies=False)
+    assert len(comments) == 1
+    assert len(messages) == 2
+    second = store.dashboard_data()['videos'][1]
+    assert second['actions']['comment'] == 'skipped'
+    assert '本轮评论上限 1 条' in second['action_reasons']['comment']
+
+
+@pytest.mark.asyncio
+async def test_daily_comment_limit_skips_public_comment(tmp_path):
+    app, calls = make_fake_bili()
+    store = Store(tmp_path / 'test.db')
+    store.init()
+    settings = Settings(topics='Python', owner_uid=42, owner_name='示例用户', dry_run=False,
+                        require_notification_confirmation=False, comment_max_per_day=0)
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='https://fake.test') as http:
+        runner = Runner(settings, store, BiliClient(http, 'SESSDATA=x; bili_jct=csrf; DedeUserID=99'),
+                        judge=lambda *_: asyncio.sleep(0, result={
+                            'worth_recommending': True, 'score': 80, 'reason': '有具体方法',
+                            'takeaways': ['先复现'], 'risk': '无', 'comment_draft': '方法很实用'}),
+                        sleep=lambda _: asyncio.sleep(0))
+        await runner.run_once(check_replies=False)
+    assert not any(path == 'x/v2/reply/add' for path, _ in calls)
+    video = store.dashboard_data()['videos'][0]
+    assert video['actions']['comment'] == 'skipped'
+    assert '24 小时内评论上限 0 条' in video['action_reasons']['comment']
+
+
+@pytest.mark.asyncio
 async def test_hidden_comment_blocks_later_comments_but_keeps_private_message(tmp_path):
     comments, messages = [], []
 

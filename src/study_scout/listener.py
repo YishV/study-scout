@@ -423,6 +423,30 @@ class MessageListener:
         self.output(f'已回复大号视频评论 @ {ident}。')
         log.info('已公开回复 @ 通知 %s：视频 aid=%s，评论 root=%s parent=%s，RPID=%s',
                  ident, aid, root, source, rpid)
+        visible = None
+        try:
+            visible = await self.bili.public_reply_visible(aid, root, rpid)
+        except Exception as exc:
+            log.warning('@ 回复公开回查失败 %s: %s', rpid, exc)
+        if visible is False:
+            bvid = str((video or {}).get('bvid') or '')
+            where = f'https://www.bilibili.com/video/{bvid}' if bvid else f'视频 aid={aid}'
+            notice = f'你在 {where} 的评论里 @ 了我。公开回复被 B 站隐藏了，先私信给你：\n{answer}'
+            try:
+                await self.runner._wait_write()
+                response = await self.bili.send_private_message(self.account_uid, self.settings.owner_uid,
+                                                                notice[:500])
+                data = response.get('data') if isinstance(response, dict) else {}
+                if not (isinstance(data, dict) and (data.get('msg_key') or response.get('msg_key'))):
+                    log.warning('@ 回复 %s 的私信接口未返回 msg_key，可能未送达；请在大号侧确认', rpid)
+                self.output('公开回复未通过 B 站可见性检查，已改用私信回复大号。')
+                log.warning('@ 回复 %s 匿名不可见，已私信大号', rpid)
+            except Exception as exc:
+                log.warning('@ 回复 %s 隐藏后私信失败：%s', rpid, exc)
+        elif visible is True:
+            log.info('@ 回复 %s 匿名可见', rpid)
+        else:
+            log.warning('@ 回复 %s 可见性未能确认', rpid)
         return 1
 
     async def _reply_to_thread(self, comment, aid, source, root, body):
