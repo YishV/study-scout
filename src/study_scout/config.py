@@ -29,13 +29,38 @@ class Settings:
     model_api_key: str = ''
     model_name: str = ''
     dry_run: bool = True
+    persona: str = '认真、简短、只谈视频中的具体做法，不装懂'
+    share_method: str = 'private_message'
+
+    @property
+    def interests(self) -> list[str]:
+        return list(dict.fromkeys(topic.strip() for topic in self.topics.split(',') if topic.strip()))
 
     @classmethod
     def from_env(cls, path: Path = Path('.env')):
         values = dict(os.environ)
         values.update(load_env(path))
         get = values.get
-        s = cls(get('STUDY_TOPICS', 'AI,Python,软件工程'), int(get('BILI_OWNER_UID') or 0), get('BILI_OWNER_NAME', ''), int(get('BILI_FAV_FOLDER_ID') or 0), min(5, max(1, int(get('BILI_BATCH_LIMIT', '5')))), min(3, max(0, int(get('BILI_COMMENT_MAX_REPLIES', '3')))), float(get('BILI_WRITE_DELAY_MIN', '5')), float(get('BILI_WRITE_DELAY_MAX', '20')), get('MODEL_BASE_URL', ''), get('MODEL_API_KEY', ''), get('MODEL_NAME', ''), get('DRY_RUN', 'true').lower() != 'false')
+        s = cls(
+            topics=get('STUDY_TOPICS', 'AI,Python,软件工程'),
+            owner_uid=int(get('BILI_OWNER_UID') or 0),
+            owner_name=get('BILI_OWNER_NAME', ''),
+            fav_folder_id=int(get('BILI_FAV_FOLDER_ID') or 0),
+            batch_limit=min(5, max(1, int(get('BILI_BATCH_LIMIT', '5')))),
+            max_replies=min(3, max(0, int(get('BILI_COMMENT_MAX_REPLIES', '3')))),
+            write_delay_min=float(get('BILI_WRITE_DELAY_MIN', '5')),
+            write_delay_max=float(get('BILI_WRITE_DELAY_MAX', '20')),
+            model_base_url=get('MODEL_BASE_URL', ''),
+            model_api_key=get('MODEL_API_KEY', ''),
+            model_name=get('MODEL_NAME', ''),
+            dry_run=get('DRY_RUN', 'true').lower() != 'false',
+            persona=get('STUDY_PERSONA', '认真、简短、只谈视频中的具体做法，不装懂'),
+            share_method=get('BILI_SHARE_METHOD', 'private_message'),
+        )
         if s.write_delay_min < 5 or s.write_delay_max < s.write_delay_min:
             raise ValueError('写操作等待必须至少 5 秒，最大值不得小于最小值')
+        if not s.interests:
+            raise ValueError('STUDY_TOPICS 至少填写一个兴趣词')
+        if s.share_method not in ('private_message', 'comment_mention'):
+            raise ValueError('BILI_SHARE_METHOD 只能是 private_message 或 comment_mention')
         return s

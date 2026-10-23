@@ -2,6 +2,7 @@
 
 import argparse
 import asyncio
+import json
 import logging
 from contextlib import AsyncExitStack
 from pathlib import Path
@@ -55,7 +56,8 @@ async def _run_command(command, settings, store, *, bvid=None, comment_id=None, 
             output(f"本轮 {run['id']}：{run['status']}，候选 {run['candidates_count']}，入选 {run['selected_count']}，错误 {run['error_code'] or '无'}")
         for comment in store.pending_mentions():
             output(f"待确认通知：评论 ID {comment['id']}，RPID {comment['rpid']}，目标 UID {comment['mention_uid']}")
-        output(f"运行模式：{'DRY_RUN' if settings.dry_run else '真实操作'}；@ 通知：{'已确认' if store.mention_ready(settings.owner_uid) else '未确认，真实互动锁定'}")
+        method = '私信' if settings.share_method == 'private_message' else '评论区 @'
+        output(f"运行模式：{'DRY_RUN' if settings.dry_run else '真实操作'}；分享方式：{method}；@ 通知：{'已确认' if store.mention_ready(settings.owner_uid) else '未确认，真实互动锁定'}")
         return 0
 
     if command in ('confirm-notification', 'notification-missing'):
@@ -69,10 +71,12 @@ async def _run_command(command, settings, store, *, bvid=None, comment_id=None, 
         output('通知已确认。' if command == 'confirm-notification' else '未收到通知，真实互动保持锁定。')
         return 0
 
-    if command not in ('run', 'verify-mention', 'check-replies'):
+    if command not in ('run', 'verify-mention', 'verify-private-message', 'check-replies'):
         raise ValueError(f'未知命令：{command}')
     if command == 'verify-mention' and not bvid:
         raise ValueError('请提供测试视频 BV 号；此命令会发一条公开验证评论')
+    if command == 'verify-private-message' and not settings.owner_uid:
+        raise ValueError('请先在 .env 配置大号 BILI_OWNER_UID')
     if command in ('run', 'check-replies') and not settings.dry_run and not store.mention_ready(settings.owner_uid):
         output('真实互动锁定：目标账号尚未确认收到 @ 通知；未开始扫码或运行。')
         return 1
@@ -105,6 +109,12 @@ async def _run_command(command, settings, store, *, bvid=None, comment_id=None, 
             return 1
 
         output('登录验证通过。')
+        if command == 'verify-private-message':
+            sender_uid = (await bili.nav())['mid']
+            await bili.send_private_message(sender_uid, settings.owner_uid,
+                                            'Study Scout 私信分享验证：请确认是否收到这条来自专用小号的测试私信。')
+            output('私信接口已接受一条测试消息；请在目标账号检查实际送达。未发送点赞、收藏或评论。')
+            return 0
         runner = Runner(settings, store, bili, judge=judge, sleep=sleep, model_http=model)
         if command == 'verify-mention':
             result = await runner.verify_test_mention(bvid)
@@ -122,17 +132,22 @@ async def _run_command(command, settings, store, *, bvid=None, comment_id=None, 
         output(f"本轮 {run_id}：{run['status']}，候选 {run['candidates_count']}，入选 {run['selected_count']}，错误 {run['error_code'] or '无'}")
         for item in store.run_results(run_id):
             output(f"{item['bvid']} {item['title']}｜{item['score'] or '-'}｜{item['kind'] or '-'}：{item['status'] or '-'}")
+            if settings.dry_run and item['kind'] == 'draft':
+                draft = json.loads(item['request_json'] or '{}')
+                output(f"  评论草稿：{draft.get('message', '')}")
+                if draft.get('share_message'):
+                    output(f"  私信草稿：{draft['share_message'].replace(chr(10), '｜')}")
         return 0 if run['status'] == 'done' else 1
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description='扫码登录后执行一轮 B 站学习筛选')
-    parser.add_argument('command', nargs='?', choices=('run', 'status', 'verify-mention', 'confirm-notification', 'notification-missing', 'check-replies'), default='run')
+    parser.add_argument('command', nargs='?', choices=('run', 'status', 'verify-mention', 'verify-private-message', 'confirm-notification', 'notification-missing', 'check-replies'), default='run')
     parser.add_argument('value', nargs='?', help='验证视频 BV 号或待确认的评论 ID')
     args = parser.parse_args(argv)
     if args.command in ('verify-mention', 'confirm-notification', 'notification-missing') and not args.value:
         parser.error('此命令需要视频 BV 号或评论 ID')
-    if args.command in ('run', 'status', 'check-replies') and args.value:
+    if args.command in ('run', 'status', 'verify-private-message', 'check-replies') and args.value:
         parser.error('此命令不接受额外参数')
     try:
         settings = Settings.from_env()

@@ -116,7 +116,7 @@ class Store:
 
     def pending_mentions(self):
         with self.connect() as db:
-            return [dict(r) for r in db.execute('SELECT * FROM comments WHERE mention_verified=1 AND notification_confirmed=0 ORDER BY id DESC')]
+            return [dict(r) for r in db.execute("SELECT * FROM comments WHERE mention_verified=1 AND notification_confirmed=0 AND status='pending_confirmation' ORDER BY id DESC")]
 
     def recent_runs(self):
         with self.connect() as db:
@@ -124,7 +124,7 @@ class Store:
 
     def run_results(self, run_id):
         with self.connect() as db:
-            return [dict(r) for r in db.execute('''SELECT c.bvid,c.title,c.subtitle_available,j.score,j.reason,a.kind,a.status,a.error_code
+            return [dict(r) for r in db.execute('''SELECT c.bvid,c.title,c.subtitle_available,j.score,j.reason,a.kind,a.status,a.error_code,a.request_json
                 FROM candidates c LEFT JOIN judgments j ON j.candidate_id=c.id
                 LEFT JOIN actions a ON a.candidate_id=c.id WHERE c.run_id=? ORDER BY c.id,a.id''', (run_id,))]
 

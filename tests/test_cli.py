@@ -76,11 +76,13 @@ async def test_start_prints_qr_and_waits_for_login_before_one_round(tmp_path):
     assert result == 0
     assert 'qrcode/generate' in paths[0]
     assert paths.count('x/passport-login/web/qrcode/poll') == 3
-    assert paths.index('x/passport-login/web/qrcode/poll') < paths.index('x/web-interface/wbi/index/top/feed/rcmd')
+    assert paths.index('x/passport-login/web/qrcode/poll') < paths.index('x/web-interface/wbi/search/type')
     assert store.recent_runs()[0]['status'] == 'done'
     assert len(store.recent_runs()) == 1
     assert any('扫码' in line for line in output)
     assert any('DRY_RUN' in line for line in output)
+    assert any('评论草稿：先复现' in line for line in output)
+    assert any('私信草稿：' in line and 'BV1test' in line for line in output)
     assert not any(path in ('x/web-interface/archive/like', 'x/v3/fav/resource/deal', 'x/v2/reply/add') for path in paths)
 
 
@@ -186,6 +188,23 @@ async def test_verify_mention_is_explicit_and_does_not_unlock_writes(tmp_path):
     assert not store.mention_ready(42)
 
 
+@pytest.mark.asyncio
+async def test_verify_private_message_only_sends_one_test_dm(tmp_path):
+    fake, calls = make_fake_bili()
+    store = Store(tmp_path / 'test.db')
+    store.init()
+    settings = Settings(owner_uid=42, dry_run=True)
+    messages = []
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=fake), base_url='https://fake.test') as http:
+        result = await cli.run_command('verify-private-message', settings, store, bili_http=http,
+                                       sleep=lambda _: asyncio.sleep(0), output=messages.append)
+    assert result == 0
+    assert [path for path, _ in calls if path.endswith('/send_msg')] == ['web_im/v1/web_im/send_msg']
+    assert not any(path in ('x/web-interface/archive/like', 'x/v3/fav/resource/deal', 'x/v2/reply/add')
+                   for path, _ in calls)
+    assert any('目标账号检查' in line for line in messages)
+
+
 def test_env_file_is_the_editable_config_source(tmp_path, monkeypatch):
     monkeypatch.setenv('STUDY_TOPICS', 'stale-parent-value')
     path = tmp_path / '.env'
@@ -194,3 +213,26 @@ def test_env_file_is_the_editable_config_source(tmp_path, monkeypatch):
     assert settings.topics == 'Python'
     assert settings.model_name == 'deepseek-chat'
     assert settings.dry_run is True
+
+
+def test_persona_interests_and_share_method_come_from_env(tmp_path):
+    path = tmp_path / '.env'
+    path.write_text(
+        '# 喜欢看的内容\n'
+        'STUDY_TOPICS=Python, AI ,软件工程\n'
+        '# 发评和回复的人设\n'
+        'STUDY_PERSONA=认真、简短、只谈具体做法\n'
+        '# 视频分享方式\n'
+        'BILI_SHARE_METHOD=private_message\n', encoding='utf-8'
+    )
+    settings = Settings.from_env(path)
+    assert settings.interests == ['Python', 'AI', '软件工程']
+    assert settings.persona == '认真、简短、只谈具体做法'
+    assert settings.share_method == 'private_message'
+
+
+def test_unknown_share_method_is_rejected(tmp_path):
+    path = tmp_path / '.env'
+    path.write_text('BILI_SHARE_METHOD=auto_fallback\n', encoding='utf-8')
+    with pytest.raises(ValueError, match='BILI_SHARE_METHOD'):
+        Settings.from_env(path)

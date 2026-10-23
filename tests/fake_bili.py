@@ -3,7 +3,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 
-def make_fake_bili(*, fail_code: int = 0, mention_uid: int = 42, subtitles: bool = True, poll_codes: tuple[int, ...] = (0,)):
+def make_fake_bili(*, fail_code: int = 0, dm_fail_code: int = 0, mention_uid: int = 42, subtitles: bool = True, poll_codes: tuple[int, ...] = (0,)):
     app = FastAPI()
     calls: list[tuple[str, dict]] = []
     poll_index = 0
@@ -12,6 +12,13 @@ def make_fake_bili(*, fail_code: int = 0, mention_uid: int = 42, subtitles: bool
     async def handle(path: str, request: Request):
         nonlocal poll_index
         form = dict(await request.form()) if request.method == 'POST' else dict(request.query_params)
+        if request.method == 'POST':
+            form.update(request.query_params)
+        if path.endswith('/send_msg'):
+            form['_has_cookie'] = bool(request.headers.get('cookie'))
+            if not form.get('csrf_token') or form['csrf_token'] != request.cookies.get('bili_jct'):
+                calls.append((path, form))
+                return {'code': -111, 'message': 'CSRF 校验失败'}
         calls.append((path, form))
         if path.endswith('qrcode/generate'):
             return {'code': 0, 'data': {'qrcode_key': 'fake-key', 'url': 'https://fake.test/login'}}
@@ -26,6 +33,8 @@ def make_fake_bili(*, fail_code: int = 0, mention_uid: int = 42, subtitles: bool
             return response
         if fail_code and request.method == 'POST':
             return {'code': fail_code, 'message': 'risk control'}
+        if dm_fail_code and path.endswith('/send_msg'):
+            return {'code': dm_fail_code, 'message': '私信发送受限'}
         if path == 'x/web-interface/nav':
             return {'code': 0, 'data': {'mid': 99, 'isLogin': True, 'wbi_img': {'img_url': 'https://i/7cd084941338484aae1ad9425b84077c.png', 'sub_url': 'https://i/4932caff0ff746eab6f01bf08b70ac45.png'}}}
         if path.endswith('feed/rcmd') or path.endswith('popular') or path.endswith('search/type'):

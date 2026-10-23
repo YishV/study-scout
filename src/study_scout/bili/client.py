@@ -1,4 +1,7 @@
 import logging
+import json
+import time
+import uuid
 from urllib.parse import urlparse
 
 import httpx
@@ -11,7 +14,7 @@ log = logging.getLogger(__name__)
 class BiliError(Exception):
     def __init__(self, code, message=''):
         self.code = code
-        self.stop_run = code in (412, -509, -105, -352, 12015, 12016) or any(x in message.lower() for x in ('验证码', '频繁', 'captcha', 'risk'))
+        self.stop_run = code in (412, -509, -105, -352, 12015, 12016, 21020, 21046, 21047) or any(x in message.lower() for x in ('验证码', '频繁', '频率过快', 'captcha', 'risk'))
         super().__init__(f'B 站错误 {code}: {message}')
 
 
@@ -20,6 +23,7 @@ class BiliClient:
         self.http = http
         self.cookie = cookie
         self._keys = None
+        self._dm_device_id = str(uuid.uuid4()).upper()
 
     def set_cookie(self, cookie):
         self.cookie = cookie
@@ -34,8 +38,8 @@ class BiliClient:
         host = urlparse(path).hostname or self.http.base_url.host
         api_host = self.http.base_url.host
         headers = {'User-Agent': 'Mozilla/5.0 StudyScout/0.1'}
-        if self.cookie and host in (api_host, 'passport.bilibili.com'):
-            headers.update({'Cookie': self.cookie, 'Referer': 'https://www.bilibili.com/'})
+        if self.cookie and host in (api_host, 'passport.bilibili.com', 'api.vc.bilibili.com'):
+            headers.update({'Cookie': self.cookie, 'Referer': 'https://message.bilibili.com/' if host == 'api.vc.bilibili.com' else 'https://www.bilibili.com/'})
         response = await self.http.request(method, path, params=params, data=data, headers=headers)
         if response.status_code == 412:
             raise BiliError(412, '风控')
@@ -48,26 +52,56 @@ class BiliClient:
     async def nav(self):
         return (await self.request('GET', '/x/web-interface/nav'))['data']
 
-    async def signed(self, path, params):
+    async def _wbi_keys(self):
         if not self._keys:
             nav = await self.nav()
             urls = nav['wbi_img']
             self._keys = tuple(urlparse(urls[k]).path.rsplit('/', 1)[-1].split('.')[0] for k in ('img_url', 'sub_url'))
+
+    async def signed(self, path, params):
+        await self._wbi_keys()
         return await self.request('GET', path, params=sign_params(params, *self._keys))
 
+    async def send_private_message(self, sender_uid: int, receiver_uid: int, message: str):
+        if sender_uid <= 0 or receiver_uid <= 0 or sender_uid == receiver_uid:
+            raise ValueError('私信发送者和目标 UID 必须是不同的有效账号')
+        if not message.strip() or len(message) > 500:
+            raise ValueError('私信内容须为 1～500 字')
+        await self._wbi_keys()
+        params = sign_params({'w_sender_uid': sender_uid, 'w_receiver_id': receiver_uid,
+                              'w_dev_id': self._dm_device_id}, *self._keys)
+        fields = {'sender_uid': sender_uid, 'receiver_type': 1, 'receiver_id': receiver_uid,
+                  'msg_type': 1, 'msg_status': 0,
+                  'content': json.dumps({'content': message}, ensure_ascii=False),
+                  'new_face_version': 0, 'dev_id': self._dm_device_id,
+                  'timestamp': int(time.time())}
+        data = {f'msg[{key}]': value for key, value in fields.items()}
+        data.update(n=1, from_firework=0, build=0, mobi_app='web', csrf_token=self.csrf)
+        return await self.request('POST', 'https://api.vc.bilibili.com/web_im/v1/web_im/send_msg',
+                                  params=params, data=data, auth=True)
+
     async def discover(self, keyword):
-        paths = [('/x/web-interface/wbi/index/top/feed/rcmd', {}), ('/x/web-interface/wbi/search/type', {'search_type': 'video', 'keyword': keyword}), ('/x/web-interface/popular', {})]
-        for path, params in paths:
+        keywords = [keyword] if isinstance(keyword, str) else keyword
+        groups = []
+        for word in keywords:
             try:
-                data = (await (self.signed(path, params) if '/wbi/' in path else self.request('GET', path, params=params)))['data']
-                items = data.get('item') or data.get('result') or data.get('list') or []
-                if items:
-                    return items
+                data = (await self.signed('/x/web-interface/wbi/search/type',
+                                          {'search_type': 'video', 'keyword': word}))['data']
+                groups.append(data.get('result') or data.get('item') or [])
             except (BiliError, httpx.HTTPError, KeyError) as exc:
                 if isinstance(exc, BiliError) and exc.stop_run:
                     raise
-                log.warning('发现接口失败: %s', exc)
-        return []
+                log.warning('兴趣搜索失败 %s: %s', word, exc)
+        ordered, seen = [], set()
+        for index in range(max((len(group) for group in groups), default=0)):
+            for group in groups:
+                if index < len(group):
+                    item = group[index]
+                    bvid = item.get('bvid') or item.get('bvid_str')
+                    if bvid and bvid not in seen:
+                        seen.add(bvid)
+                        ordered.append(item)
+        return ordered
 
     async def detail(self, bvid):
         return (await self.request('GET', '/x/web-interface/view', params={'bvid': bvid}))['data']
