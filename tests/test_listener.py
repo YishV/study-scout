@@ -26,6 +26,12 @@ def notice(ident, root=55, uid=8, body='怎么做？'):
                      'source_id': ident + 100, 'source_content': body}}
 
 
+def at_notice(ident, uid=42, body='@小号 这个视频讲得怎么样？', aid=1):
+    return {'id': ident, 'at_time': ident, 'user': {'mid': uid},
+            'item': {'business_id': 1, 'subject_id': aid, 'root_id': 0,
+                     'source_id': ident + 200, 'source_content': body}}
+
+
 def ready_store(tmp_path):
     store = Store(tmp_path / 'test.db')
     store.init()
@@ -227,3 +233,131 @@ def test_listener_config_is_bounded_and_chinese_documented(tmp_path):
     path.write_text('BILI_LISTEN_INTERVAL_SECONDS=5\n', encoding='utf-8')
     with pytest.raises(ValueError, match='至少为 60'):
         Settings.from_env(path)
+
+
+@pytest.mark.asyncio
+async def test_owner_shared_video_card_is_read_with_subtitles_then_answered_once(tmp_path):
+    fake, calls = make_fake_bili()
+    store, _ = ready_store(tmp_path)
+    fake.state.dm_messages.append(dm(10))
+    settings = Settings(owner_uid=42, dry_run=False, model_name='fake',
+                        model_base_url='https://model.test', model_api_key='fake')
+    requests = []
+
+    def answer(request):
+        requests.append(json.loads(request.content))
+        return httpx.Response(200, json={'choices': [{'message': {'content': '这条讲先最小复现，再定位问题。'}}]})
+
+    async with (httpx.AsyncClient(transport=httpx.ASGITransport(app=fake), base_url='https://fake.test') as http,
+                httpx.AsyncClient(transport=httpx.MockTransport(answer)) as model):
+        listener = MessageListener(settings, store, BiliClient(http, 'SESSDATA=x; bili_jct=csrf'),
+                                   model_http=model, sleep=lambda _: asyncio.sleep(0))
+        assert await listener.poll_once() == 0
+        fake.state.dm_messages.append({'msg_seqno': 11, 'msg_key': 110, 'sender_uid': 42,
+                                       'msg_type': 7, 'msg_status': 0,
+                                       'content': json.dumps({'source': 5, 'bvid': 'BV1test', 'title': 'Python 调试'})})
+        assert await listener.poll_once() == 1
+        assert await listener.poll_once() == 0
+    paths = [path for path, _ in calls]
+    assert 'x/web-interface/view' in paths and 'x/player/wbi/v2' in paths
+    assert '先最小复现' in json.dumps(requests[0], ensure_ascii=False)
+    assert len([path for path in paths if path.endswith('/send_msg')]) == 1
+    assert not any(path in ('x/web-interface/archive/like', 'x/v3/fav/resource/deal', 'x/v2/reply/add') for path in paths)
+
+
+@pytest.mark.asyncio
+async def test_owner_video_link_without_subtitles_gets_honest_answer(tmp_path):
+    fake, calls = make_fake_bili(subtitles=False)
+    store, _ = ready_store(tmp_path)
+    fake.state.dm_messages.append(dm(10))
+    settings = Settings(owner_uid=42, dry_run=False, model_name='fake',
+                        model_base_url='https://model.test', model_api_key='fake')
+    requests = []
+
+    def answer(request):
+        requests.append(json.loads(request.content))
+        return httpx.Response(200, json={'choices': [{'message': {'content': '我只拿到标题和简介，没拿到字幕，无法确认视频讲解。'}}]})
+
+    async with (httpx.AsyncClient(transport=httpx.ASGITransport(app=fake), base_url='https://fake.test') as http,
+                httpx.AsyncClient(transport=httpx.MockTransport(answer)) as model):
+        listener = MessageListener(settings, store, BiliClient(http, 'SESSDATA=x; bili_jct=csrf'),
+                                   model_http=model, sleep=lambda _: asyncio.sleep(0))
+        await listener.poll_once()
+        fake.state.dm_messages.append(dm(11, body='看看 https://www.bilibili.com/video/BV1test 这条怎么样？'))
+        assert await listener.poll_once() == 1
+    assert not requests
+    writes = [form for path, form in calls if path.endswith('/send_msg')]
+    assert len(writes) == 1
+    assert '没拿到字幕' in json.loads(writes[0]['msg[content]'])['content']
+
+
+@pytest.mark.asyncio
+async def test_owner_at_on_other_video_reads_subtitles_and_publicly_replies(tmp_path):
+    fake, calls = make_fake_bili()
+    store, _ = ready_store(tmp_path)
+    fake.state.dm_messages.append(dm(10))
+    fake.state.at_notifications.append(at_notice(10))
+    settings = Settings(owner_uid=42, dry_run=False, model_name='fake',
+                        model_base_url='https://model.test', model_api_key='fake')
+    requests = []
+
+    def answer(request):
+        requests.append(json.loads(request.content))
+        return httpx.Response(200, json={'choices': [{'message': {'content': '我看字幕里讲的是先复现再定位。'}}]})
+
+    async with (httpx.AsyncClient(transport=httpx.ASGITransport(app=fake), base_url='https://fake.test') as http,
+                httpx.AsyncClient(transport=httpx.MockTransport(answer)) as model):
+        listener = MessageListener(settings, store, BiliClient(http, 'SESSDATA=x; bili_jct=csrf'),
+                                   model_http=model, sleep=lambda _: asyncio.sleep(0))
+        assert await listener.poll_once() == 0
+        fake.state.at_notifications.extend([at_notice(11, uid=77), at_notice(12)])
+        assert await listener.poll_once() == 1
+        assert await listener.poll_once() == 0
+    writes = [form for path, form in calls if path == 'x/v2/reply/add']
+    assert len(writes) == 1 and writes[0]['oid'] == '1'
+    assert writes[0]['root'] == writes[0]['parent'] == '212'
+    assert '先最小复现' in json.dumps(requests[0], ensure_ascii=False)
+    assert store.dashboard_data()['totals']['replies_ok'] == 1
+
+
+@pytest.mark.asyncio
+async def test_dry_run_shared_video_does_not_call_model_or_send(tmp_path):
+    fake, calls = make_fake_bili()
+    store, _ = ready_store(tmp_path)
+    fake.state.dm_messages.append(dm(10))
+    settings = Settings(owner_uid=42, dry_run=True)
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=fake), base_url='https://fake.test') as http:
+        listener = MessageListener(settings, store, BiliClient(http, 'SESSDATA=x; bili_jct=csrf'),
+                                   sleep=lambda _: asyncio.sleep(0))
+        await listener.poll_once()
+        fake.state.dm_messages.append(dm(11, body='BV1test 这个怎么样？'))
+        assert await listener.poll_once() == 0
+    assert not any(path == 'x/web-interface/view' or path.endswith('/send_msg') for path, _ in calls)
+
+
+@pytest.mark.asyncio
+async def test_video_card_with_aid_is_supported_and_risk_error_stops(tmp_path):
+    fake, calls = make_fake_bili()
+    store, _ = ready_store(tmp_path)
+    fake.state.dm_messages.append(dm(10))
+    settings = Settings(owner_uid=42, dry_run=False, model_name='fake',
+                        model_base_url='https://model.test', model_api_key='fake')
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=fake), base_url='https://fake.test') as http:
+        bili = BiliClient(http, 'SESSDATA=x; bili_jct=csrf')
+        listener = MessageListener(settings, store, bili,
+                                   dm_reply=lambda *_: asyncio.sleep(0, result='看过字幕了。'),
+                                   sleep=lambda _: asyncio.sleep(0))
+        await listener.poll_once()
+        fake.state.dm_messages.append({'msg_seqno': 11, 'msg_key': 110, 'sender_uid': 42,
+                                       'msg_type': 7, 'msg_status': 0,
+                                       'content': json.dumps({'source': 5, 'id': 1, 'title': 'Python 调试'})})
+        assert await listener.poll_once() == 1
+        async def risk(_aid):
+            raise BiliError(412, '风控')
+        bili.detail_by_aid = risk
+        fake.state.at_notifications.append(at_notice(11))
+        with pytest.raises(BiliError) as exc:
+            await listener.poll_once()
+        assert exc.value.stop_run
+    assert any(path == 'x/web-interface/view' and form.get('aid') == '1' for path, form in calls)
+    assert len([path for path, _ in calls if path == 'x/v2/reply/add']) == 0

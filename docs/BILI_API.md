@@ -13,6 +13,7 @@
 | 私信分享 | `https://api.vc.bilibili.com/web_im/v1/web_im/send_msg` | 发件 UID、目标 UID、文本内容、设备 ID、WBI 签名、登录 Cookie、表单 `csrf=bili_jct` 与 `csrf_token=bili_jct` |
 | 读取目标私信 | `https://api.vc.bilibili.com/svr_sync/v1/svr_sync/fetch_session_msgs` | 目标 UID、会话类型 1、WBI 签名、登录 Cookie |
 | 读取回复通知 | `/x/msgfeed/reply` | 游标 ID、回复时间、登录 Cookie |
+| 读取 @ 通知 | `/x/msgfeed/at` | 游标 ID、@ 时间、登录 Cookie；仅处理配置的大号在视频评论中的 @ |
 
 二维码登录成功后 Cookie 只保存在进程内存，每次启动重新扫码。评论 `@昵称` 是否发出真实通知不能靠文本推断：先检查评论响应中的 `data.reply.content.members` 是否包含目标 UID，再由目标账号人工确认通知。此验证未完成时真实互动锁定。私信请求格式参考 B 站网页客户端自身脚本；接口返回成功也需要由收件账号检查实际送达。
 

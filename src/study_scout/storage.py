@@ -31,6 +31,7 @@ class Store:
             CREATE TABLE IF NOT EXISTS accounts (id INTEGER PRIMARY KEY, platform TEXT, uid INTEGER, nickname TEXT, credential_blob BLOB, updated_at TEXT);
             CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT);
             CREATE TABLE IF NOT EXISTS dm_replies (id INTEGER PRIMARY KEY, account_uid INTEGER NOT NULL, owner_uid INTEGER NOT NULL, msg_key TEXT NOT NULL, status TEXT NOT NULL, created_at TEXT NOT NULL, UNIQUE(account_uid,owner_uid,msg_key));
+            CREATE TABLE IF NOT EXISTS mention_replies (id INTEGER PRIMARY KEY, account_uid INTEGER NOT NULL, notification_id TEXT NOT NULL, status TEXT NOT NULL, created_at TEXT NOT NULL, UNIQUE(account_uid,notification_id));
             ''')
             columns = {row['name'] for row in db.execute('PRAGMA table_info(candidates)')}
             if 'skip_reason' not in columns:
@@ -164,6 +165,17 @@ class Store:
         with self.connect() as db:
             return db.execute('SELECT count(*) FROM dm_replies').fetchone()[0]
 
+    def claim_mention_reply(self, account_uid, notification_id):
+        with self.connect() as db:
+            result = db.execute('INSERT OR IGNORE INTO mention_replies(account_uid,notification_id,status,created_at) VALUES (?,?,?,?)',
+                                (account_uid, str(notification_id), 'pending', now()))
+            return bool(result.rowcount)
+
+    def update_mention_reply(self, account_uid, notification_id, status):
+        with self.connect() as db:
+            db.execute('UPDATE mention_replies SET status=? WHERE account_uid=? AND notification_id=?',
+                       (status, account_uid, str(notification_id)))
+
     def own_comment_by_root(self, aid, rpid):
         with self.connect() as db:
             row = db.execute('''SELECT comments.*,candidates.aid FROM comments
@@ -202,7 +214,8 @@ class Store:
                 'selected': db.execute('SELECT coalesce(sum(selected_count),0) FROM runs').fetchone()[0],
                 'actions_ok': db.execute("SELECT count(*) FROM actions WHERE status='ok' AND kind IN ('like','favorite','comment','private_message')").fetchone()[0],
                 'actions_failed': db.execute("SELECT count(*) FROM actions WHERE status='failed' AND kind IN ('like','favorite','comment','private_message')").fetchone()[0],
-                'replies_ok': db.execute("SELECT count(*) FROM replies WHERE status='ok'").fetchone()[0],
+                'replies_ok': (db.execute("SELECT count(*) FROM replies WHERE status='ok'").fetchone()[0]
+                               + db.execute("SELECT count(*) FROM mention_replies WHERE status='ok'").fetchone()[0]),
                 'dm_replies_ok': db.execute("SELECT count(*) FROM dm_replies WHERE status='ok'").fetchone()[0],
             }
             videos = []

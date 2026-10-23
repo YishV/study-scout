@@ -95,6 +95,12 @@ class BiliClient:
             params.update(id=offset_id, reply_time=reply_time)
         return (await self.request('GET', '/x/msgfeed/reply', params=params))['data']
 
+    async def at_notifications(self, *, offset_id=None, at_time=None):
+        params = {'platform': 'web', 'build': 0, 'mobi_app': 'web'}
+        if offset_id is not None:
+            params.update(id=offset_id, at_time=at_time)
+        return (await self.request('GET', '/x/msgfeed/at', params=params))['data']
+
     async def discover(self, keyword):
         keywords = [keyword] if isinstance(keyword, str) else keyword
         groups = []
@@ -120,6 +126,9 @@ class BiliClient:
 
     async def detail(self, bvid):
         return (await self.request('GET', '/x/web-interface/view', params={'bvid': bvid}))['data']
+
+    async def detail_by_aid(self, aid):
+        return (await self.request('GET', '/x/web-interface/view', params={'aid': aid}))['data']
 
     async def subtitles(self, aid, cid):
         data = (await self.signed('/x/player/wbi/v2', {'aid': aid, 'cid': cid}))['data']

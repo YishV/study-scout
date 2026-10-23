@@ -9,6 +9,7 @@ def make_fake_bili(*, fail_code: int = 0, dm_fail_code: int = 0, mention_uid: in
     poll_index = 0
     dm_messages: list[dict] = []
     reply_notifications: list[dict] = []
+    at_notifications: list[dict] = []
 
     @app.api_route('/{path:path}', methods=['GET', 'POST'])
     async def handle(path: str, request: Request):
@@ -43,19 +44,22 @@ def make_fake_bili(*, fail_code: int = 0, dm_fail_code: int = 0, mention_uid: in
         if path == 'svr_sync/v1/svr_sync/fetch_session_msgs':
             return {'code': 0, 'data': {'messages': sorted(dm_messages, key=lambda m: m['msg_seqno'], reverse=True)[:50],
                                         'has_more': int(len(dm_messages) > 50)}}
-        if path == 'x/msgfeed/reply':
+        if path in ('x/msgfeed/reply', 'x/msgfeed/at'):
             offset = int(form.get('id') or 0)
-            items = sorted(reply_notifications, key=lambda m: int(m['id']), reverse=True)
+            source = reply_notifications if path.endswith('/reply') else at_notifications
+            items = sorted(source, key=lambda m: int(m['id']), reverse=True)
             if offset:
                 items = [item for item in items if int(item['id']) < offset]
             page = items[:20]
             return {'code': 0, 'data': {'items': page,
                                         'cursor': {'id': page[-1]['id'] if page else 0,
-                                                   'time': page[-1]['reply_time'] if page else 0,
+                                                   'time': (page[-1].get('reply_time') or page[-1].get('at_time')) if page else 0,
                                                    'is_end': len(items) <= 20}}}
         if path.endswith('feed/rcmd') or path.endswith('popular') or path.endswith('search/type'):
             return {'code': 0, 'data': {'item': [{'bvid': 'BV1test', 'title': 'Python 调试', 'owner': {'mid': 7, 'name': '老师'}}], 'list': [{'bvid': 'BV1test', 'title': 'Python 调试'}], 'result': []}}
         if path == 'x/web-interface/view':
+            if (form.get('bvid') not in (None, 'BV1test') or form.get('aid') not in (None, '1')):
+                return {'code': -404, 'message': '视频不存在'}
             return {'code': 0, 'data': {'bvid': 'BV1test', 'aid': 1, 'cid': 2, 'title': 'Python 调试', 'desc': '最小复现', 'owner': {'mid': 7, 'name': '老师'}, 'duration': 600, 'pubdate': 1}}
         if path == 'x/player/wbi/v2':
             return {'code': 0, 'data': {'subtitle': {'subtitles': [{'subtitle_url': '//fake.test/subtitle.json'}] if subtitles else []}}}
@@ -71,4 +75,5 @@ def make_fake_bili(*, fail_code: int = 0, dm_fail_code: int = 0, mention_uid: in
 
     app.state.dm_messages = dm_messages
     app.state.reply_notifications = reply_notifications
+    app.state.at_notifications = at_notifications
     return app, calls
