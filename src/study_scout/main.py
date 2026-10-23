@@ -4,6 +4,8 @@ import argparse
 import asyncio
 import json
 import logging
+import logging.handlers
+import sys
 from contextlib import AsyncExitStack
 from pathlib import Path
 
@@ -22,6 +24,27 @@ from .service import RunController, StudyService
 from .storage import Store
 
 log = logging.getLogger(__name__)
+
+_LOG_FORMAT = '%(asctime)s %(levelname)-7s %(name)s: %(message)s'
+_LOG_FILE_FORMAT = '%(asctime)s %(levelname)-7s %(name)s [%(filename)s:%(lineno)d] %(message)s'
+
+
+def configure_logging(*, level=logging.INFO, log_path=Path('data/study-scout.log')) -> Path:
+    """Write readable progress to the terminal and a bounded history file."""
+    handlers = [logging.StreamHandler(sys.stdout)]
+    try:
+        log_path = Path(log_path)
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        handlers.append(logging.handlers.RotatingFileHandler(
+            log_path, maxBytes=2_000_000, backupCount=3, encoding='utf-8'))
+    except OSError:
+        pass
+    handlers[0].setFormatter(logging.Formatter(_LOG_FORMAT, '%H:%M:%S'))
+    if len(handlers) > 1:
+        handlers[1].setFormatter(logging.Formatter(_LOG_FILE_FORMAT))
+    logging.basicConfig(level=level, handlers=handlers, force=True)
+    logging.getLogger('httpx').setLevel(logging.WARNING)
+    return Path(log_path)
 
 
 def render_qr(url: str) -> str:
@@ -124,14 +147,23 @@ async def _run_command(command, settings, store, *, bvid=None, comment_id=None, 
             output('二维码已过期，正在刷新。' if state == 'expired' else '等待扫码超时，正在刷新二维码。')
             await sleep(2)
 
-        account_uid = int((await bili.nav())['mid'])
+        account = await bili.identity()
+        account_uid = account['uid']
         if account_uid == settings.owner_uid:
             output('扫码的是配置的大号，请改用专用小号；未运行任何任务。')
             return 1
-        output(f'登录验证通过，小号 UID：{account_uid}。')
+        output(f"登录验证通过，小号：{account['name'] or '未知昵称'}（UID {account_uid}，Lv{account['level'] if account['level'] is not None else '?'}）。")
+        log.info('扫码登录成功：%s（UID %s，Lv%s，手机绑定=%s）', account['name'] or '-', account_uid,
+                 account['level'] if account['level'] is not None else '?',
+                 {True: '是', False: '否'}.get(account['mobile_verified'], '未知'))
+        if account['level'] is not None and account['level'] < 2:
+            warning = ('当前小号等级低于 Lv2。B 站低等级账号的评论常进入审核或仅自己可见，'
+                       '接口成功不代表他人能看到；建议先完成答题转正并绑定手机，'
+                       '或把 BILI_SHARE_METHOD 改为 private_message 只走私信。')
+            output(warning)
+            log.warning(warning)
         if command == 'verify-private-message':
-            sender_uid = (await bili.nav())['mid']
-            await bili.send_private_message(sender_uid, settings.owner_uid,
+            await bili.send_private_message(account_uid, settings.owner_uid,
                                             'Study Scout 私信分享验证：请确认是否收到这条来自专用小号的测试私信。')
             output('私信接口已接受一条测试消息；请在目标账号检查实际送达。未发送点赞、收藏或评论。')
             return 0
@@ -155,9 +187,13 @@ async def _run_command(command, settings, store, *, bvid=None, comment_id=None, 
             return 0
         if command == 'verify-mention':
             result = await runner.verify_test_mention(bvid)
-            output(f"公开验证评论 RPID {result['rpid']}；接口成员匹配：{result['reply_member_verified']}。")
+            visibility = {True: '匿名接口可见', False: '匿名接口不可见，可能仅自己可见',
+                          None: '匿名接口未能确认'}.get(result['public_visible'], '未检查')
+            output(f"公开验证评论 RPID {result['rpid']}；接口成员匹配：{result['reply_member_verified']}；{visibility}。")
+            if result['public_visible'] is False:
+                output('警告：匿名接口看不到这条评论，当前小号可能被限制；不建议直接开启真实评论。')
             output('请在目标账号站内查看 @ 通知，再用 status 查评论 ID 并手动确认。')
-            return 0 if result['reply_member_verified'] else 1
+            return 0 if result['reply_member_verified'] and result['public_visible'] is not False else 1
         if command == 'check-replies':
             sent = await runner.check_replies()
             output(f'检查完成，自动回复 {sent} 条。')
@@ -182,6 +218,8 @@ def main(argv=None):
     parser.add_argument('command', nargs='?', choices=('serve', 'run', 'listen', 'status', 'dashboard', 'verify-mention', 'verify-private-message', 'confirm-notification', 'notification-missing', 'check-replies'), default='serve')
     parser.add_argument('value', nargs='?', help='验证视频 BV 号或待确认的评论 ID')
     args = parser.parse_args(argv)
+    configure_logging()
+    log.info('Study Scout 启动：命令=%s', args.command)
     if args.command in ('verify-mention', 'confirm-notification', 'notification-missing') and not args.value:
         parser.error('此命令需要视频 BV 号或评论 ID')
     if args.command in ('serve', 'run', 'listen', 'status', 'dashboard', 'verify-private-message', 'check-replies') and args.value:
@@ -193,6 +231,9 @@ def main(argv=None):
             serve_dashboard(store)
             return 0
         settings = Settings.from_env()
+        log.info('运行配置：模式=%s，分享=%s，视频间隔=%s 分钟，消息间隔=%s 秒，每轮最多 %s 条',
+                 'DRY_RUN' if settings.dry_run else '真实互动', settings.share_method,
+                 settings.run_interval_minutes, settings.listen_interval_seconds, settings.batch_limit)
         comment_id = int(args.value) if args.command in ('confirm-notification', 'notification-missing') else None
         return asyncio.run(run_command(args.command, settings, store,
                                        bvid=args.value if args.command == 'verify-mention' else None,
@@ -202,6 +243,7 @@ def main(argv=None):
         return 130
     except Exception as exc:
         log.error('命令失败：%s', exc)
+        log.debug('异常堆栈', exc_info=True)
         print(f'命令失败：{exc}')
         return 1
 

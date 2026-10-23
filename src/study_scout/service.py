@@ -1,10 +1,13 @@
 """One foreground process schedules video rounds and message checks."""
 
 import asyncio
+import logging
 import secrets
 import threading
 import time
 from datetime import datetime, timedelta, timezone
+
+log = logging.getLogger(__name__)
 
 
 class RunController:
@@ -164,6 +167,8 @@ class StudyService:
         next_video = self.clock() + interval
         next_listener = self.clock() + self.settings.listen_interval_seconds if listen_enabled else None
         self.controller.next_run_in(interval)
+        log.info('服务进入常驻：视频每 %s 分钟一轮，消息每 %s 秒检查',
+                 self.settings.run_interval_minutes, self.settings.listen_interval_seconds)
         while not self.controller.stopping:
             now = self.clock()
             if self.controller.take_pending() or now >= next_video:

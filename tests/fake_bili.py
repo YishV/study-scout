@@ -41,6 +41,8 @@ def make_fake_bili(*, fail_code: int = 0, dm_fail_code: int = 0, mention_uid: in
             return {'code': dm_fail_code, 'message': '私信发送受限'}
         if path == 'x/web-interface/nav':
             return {'code': 0, 'data': {'mid': 99, 'isLogin': True, 'wbi_img': {'img_url': 'https://i/7cd084941338484aae1ad9425b84077c.png', 'sub_url': 'https://i/4932caff0ff746eab6f01bf08b70ac45.png'}}}
+        if path == 'x/frontend/finger/spi':
+            return {'code': 0, 'data': {'b_3': 'fake-buvid3', 'b_4': 'fake-buvid4'}}
         if path == 'svr_sync/v1/svr_sync/fetch_session_msgs':
             return {'code': 0, 'data': {'messages': sorted(dm_messages, key=lambda m: m['msg_seqno'], reverse=True)[:50],
                                         'has_more': int(len(dm_messages) > 50)}}
@@ -68,6 +70,9 @@ def make_fake_bili(*, fail_code: int = 0, dm_fail_code: int = 0, mention_uid: in
         if path == 'x/v3/fav/folder/created/list-all':
             return {'code': 0, 'data': {'list': [{'id': 9, 'title': '学习'}]}}
         if path == 'x/v2/reply/reply':
+            form['_has_cookie'] = bool(request.headers.get('cookie'))
+            if public_fail_code:
+                return {'code': public_fail_code, 'message': 'risk control'}
             if form.get('root') == '201':
                 return ({'code': 0, 'data': {'root': {'rpid': 201}, 'replies': []}}
                         if public_comment_visible else {'code': 12006, 'message': '没有该评论'})

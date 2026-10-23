@@ -39,6 +39,8 @@ class Runner:
         self.stop_requested = False
         self.step = '空闲'
         self._last_write = False
+        self.comments_blocked = ''
+        self.account = None
 
     def stop(self):
         self.stop_requested = True
@@ -63,6 +65,22 @@ class Runner:
             return result if isinstance(result, Judgment) else Judgment.model_validate(result)
         return await judge_with_model(self.model_http, self.settings, detail, transcript)
 
+    async def _check_account(self):
+        if self.account is not None:
+            return
+        identity = getattr(self.bili, 'identity', None)
+        if identity is None:
+            return
+        try:
+            self.account = await identity()
+        except Exception as exc:
+            log.debug('读取账号信息失败：%s', exc)
+            return
+        level = self.account.get('level')
+        if level is not None and level < 2:
+            log.warning('当前小号 Lv%s。B 站低等级账号的评论常进入审核或仅自己可见，'
+                        '接口成功不代表他人可见；建议先答题转正/绑定手机，或只用私信分享。', level)
+
     async def run_once(self, *, check_replies=True):
         if self.lock.locked():
             raise RuntimeError('已有一轮运行中')
@@ -72,7 +90,9 @@ class Runner:
             run_id = self.store.start_run(dry_run=self.settings.dry_run)
             status, error = 'done', None
             selected = considered = 0
+            log.info('第 %s 轮开始：%s', run_id, 'DRY_RUN' if self.settings.dry_run else '真实互动')
             try:
+                await self._check_account()
                 if (not self.settings.dry_run and self.settings.require_notification_confirmation
                         and not self.store.mention_ready(self.settings.owner_uid)):
                     raise RuntimeError('真实写操作锁定：请先完成测试评论 @ UID 和目标账号通知验证')
@@ -80,6 +100,7 @@ class Runner:
                     raise RuntimeError('请先配置模型 API 地址、模型名和密钥')
                 self.step = '发现视频'
                 items = await self.bili.discover(self.settings.interests)
+                log.info('兴趣搜索返回 %s 个候选', len(items))
                 titles, authors = set(), set()
                 for item in items:
                     if self.stop_requested or considered >= self.settings.batch_limit:
@@ -92,9 +113,11 @@ class Runner:
                     detail = await self.bili.detail(bvid)
                     title = detail.get('title', '')
                     author = (detail.get('owner') or {}).get('name', '')
+                    log.info('读取 %s：%s', bvid, title or '(无标题)')
                     candidate_id = self.store.add_candidate(run_id, {'bvid': bvid, 'aid': detail['aid'], 'cid': detail['cid'], 'title': title, 'description': detail.get('desc', ''), 'author': author, 'duration': detail.get('duration'), 'pubdate': detail.get('pubdate')})
                     if title in titles or author in authors:
                         self.store.record_skip(candidate_id, 'duplicate_title' if title in titles else 'duplicate_author')
+                        log.info('跳过 %s：标题或作者与本轮已检查的视频重复', bvid)
                         continue
                     titles.add(title)
                     authors.add(author)
@@ -110,10 +133,13 @@ class Runner:
                         self.store.record_action(candidate_id, 'judge', 'failed', error=str(exc))
                         continue
                     self.store.record_judgment(candidate_id, judgment, self.settings.model_name)
+                    log.info('判断 %s：%s 分，%s', bvid, judgment.score,
+                             '入选' if judgment.recommended and judgment.score >= 70 else '未入选')
                     if not judgment.recommended or judgment.score < 70 or not judgment.takeaways:
                         self.store.record_skip(candidate_id, 'not_selected')
                         continue
                     if not transcript:
+                        log.info('%s 无字幕，只按标题和简介判断', bvid)
                         if not self.settings.owner_uid:
                             self.store.record_skip(candidate_id, 'metadata_no_owner')
                             continue
@@ -127,6 +153,7 @@ class Runner:
                             continue
                         self.store.record_action(candidate_id, 'private_message', 'pending')
                         self.step = f'private_message {bvid}'
+                        log.info('无字幕入选，私信大号 %s', bvid)
                         await self._wait_write()
                         try:
                             sender_uid = (await self.bili.nav())['mid']
@@ -179,9 +206,16 @@ class Runner:
                             break
                         if self.store.action_exists(candidate_id, kind):
                             continue
+                        if kind == 'comment' and self.comments_blocked:
+                            self.store.record_action(candidate_id, 'comment', 'skipped',
+                                                     {'reason': self.comments_blocked})
+                            log.info('跳过 %s 的评论：%s', bvid, self.comments_blocked)
+                            continue
                         # Reserve the action before sending. Ambiguous network failures must never cause a repeat.
                         self.store.record_action(candidate_id, kind, 'pending')
                         self.step = f'{kind} {bvid}'
+                        log.info('%s %s', {'like': '点赞', 'favorite': '收藏', 'comment': '发表评论',
+                                           'private_message': '发送私信'}.get(kind, kind), bvid)
                         await self._wait_write()
                         try:
                             if kind == 'like':
@@ -204,10 +238,12 @@ class Runner:
                                 mention_missing = mention_owner and not verified
                                 comment_id = self.store.save_comment(candidate_id, rpid, message, self.settings.owner_uid,
                                                                      verified, 'mention_unverified' if mention_missing else 'ok')
+                                log.info('评论已提交 %s：RPID %s，@ 匹配：%s', bvid, rpid,
+                                         '是' if verified else ('否' if mention_owner else '未使用'))
                                 if mention_missing:
                                     raise RuntimeError('评论未形成真实 @，已停止本轮')
                             else:
-                                sender_uid = (await self.bili.nav())['mid']
+                                sender_uid = self.account['uid'] if self.account else (await self.bili.nav())['mid']
                                 await self.bili.send_private_message(sender_uid, self.settings.owner_uid, share_message)
                             self.store.update_action(candidate_id, kind, 'ok')
                         except Exception as exc:
@@ -216,7 +252,16 @@ class Runner:
                         if kind == 'comment':
                             try:
                                 visible = await self.bili.public_comment_visible(detail['aid'], rpid)
-                                self.store.set_comment_visibility(comment_id, 'visible' if visible else 'unconfirmed')
+                                if visible is True:
+                                    self.store.set_comment_visibility(comment_id, 'visible')
+                                    log.info('评论公开回查 %s：匿名接口可见', rpid)
+                                elif visible is False:
+                                    self.store.set_comment_visibility(comment_id, 'unconfirmed')
+                                    self.comments_blocked = '匿名回查未查到已发表评论，疑似仅自己可见'
+                                    log.warning('评论公开回查 %s：匿名接口未查到，评论可能仅自己可见。'
+                                                '已暂停后续自动评论；请先确认小号等级、手机绑定或 B 站审核状态。', rpid)
+                                else:
+                                    log.warning('评论公开回查 %s：匿名接口暂时不可用，未能确认可见性', rpid)
                             except BiliError as exc:
                                 if exc.stop_run:
                                     raise
@@ -237,6 +282,8 @@ class Runner:
                 self.step = '空闲'
                 self.store.update_run_counts(run_id, considered, selected)
                 self.store.finish_run(run_id, status, error)
+                log.info('第 %s 轮结束：%s，候选 %s，入选 %s%s', run_id, status, considered, selected,
+                         f'，错误 {error}' if error else '')
             return run_id
 
     async def verify_test_mention(self, bvid):
@@ -261,10 +308,14 @@ class Runner:
                 response = await self.bili.comment(detail['aid'], message)
                 verified = verified_member(response, self.settings.owner_uid)
                 rpid = response['data']['reply']['rpid']
+                visible = await self.bili.public_comment_visible(detail['aid'], rpid)
                 comment_id = self.store.save_comment(candidate_id, rpid, message, self.settings.owner_uid, verified, 'pending_confirmation' if verified else 'mention_unverified')
+                if visible is not None:
+                    self.store.set_comment_visibility(comment_id, 'visible' if visible else 'unconfirmed')
                 self.store.update_action(candidate_id, 'mention_test', 'ok' if verified else 'mention_unverified')
                 self.store.finish_run(run_id, 'done' if verified else 'failed', None if verified else 'mention_unverified')
-                return {'comment_id': comment_id, 'reply_member_verified': verified, 'rpid': rpid}
+                return {'comment_id': comment_id, 'reply_member_verified': verified, 'rpid': rpid,
+                        'public_visible': visible}
             except Exception as exc:
                 self.store.update_action(candidate_id, 'mention_test', 'failed', str(getattr(exc, 'code', 'error')))
                 self.store.finish_run(run_id, 'failed', str(exc))
@@ -275,8 +326,10 @@ class Runner:
                                      and not self.store.mention_ready(self.settings.owner_uid))):
             return 0
         sent = 0
-        own_uid = (await self.bili.nav())['mid']
-        for comment in self.store.own_comments():
+        own_uid = self.account['uid'] if self.account else (await self.bili.nav())['mid']
+        comments = self.store.own_comments()
+        log.info('检查小号评论下的新回复：%s 条评论', len(comments))
+        for comment in comments:
             if self.stop_requested:
                 break
             if self.store.reply_count(comment['id']) >= self.settings.max_replies:
@@ -309,6 +362,8 @@ class Runner:
                         raise
                 if self.store.reply_count(comment['id']) >= self.settings.max_replies:
                     break
+        if sent:
+            log.info('已回复小号评论下的新回复 %s 条', sent)
         return sent
 
     async def _model_reply(self, body, comment):

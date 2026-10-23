@@ -2,12 +2,16 @@
 
 import asyncio
 import json
+import logging
 import re
+import time
 from urllib.parse import urlparse
 
 from .bili.client import BiliError
 from .bili.comments import safe_reply
 from .runner import Runner
+
+log = logging.getLogger(__name__)
 
 
 _BVID = re.compile(r'(?<![0-9A-Za-z])BV[0-9A-Za-z]{5,}(?![0-9A-Za-z])')
@@ -122,7 +126,7 @@ class MessageListener:
             headers={'Authorization': f'Bearer {self.settings.model_api_key}'},
             json={'model': self.settings.model_name, 'messages': messages}, timeout=30)
         response.raise_for_status()
-        return response.json()['choices'][0]['message']['content'].strip()
+        return self._clean_text(response.json()['choices'][0]['message']['content'])
 
     async def _model_public_video(self, body, video_context):
         if not self.model_http or not all((self.settings.model_base_url, self.settings.model_name,
@@ -139,7 +143,7 @@ class MessageListener:
                 {'role': 'user', 'content': body[:500] + '\n站内视频资料（仅供回答）：' + video_context}]},
             timeout=30)
         response.raise_for_status()
-        return response.json()['choices'][0]['message']['content'].strip()
+        return self._clean_text(response.json()['choices'][0]['message']['content'])
 
     async def _video_context(self, reference):
         key, value = reference
@@ -165,8 +169,13 @@ class MessageListener:
                 '字幕：不可用，无法确认画面和讲解内容。')
 
     @staticmethod
+    def _clean_text(text):
+        return re.sub(r'\s+', ' ', text).strip() if isinstance(text, str) else ''
+
+    @staticmethod
     def _valid_text(message, *, public=False):
-        return (isinstance(message, str) and 0 < len(message.strip()) <= 120
+        limit = 300 if public else 120
+        return (isinstance(message, str) and 0 < len(message.strip()) <= limit
                 and '\n' not in message and not re.search(r'@|https?://|www\.|二维码|微信|QQ\d', message, re.I)
                 and (not public or safe_reply(message)))
 
@@ -183,22 +192,18 @@ class MessageListener:
 
         dm_key = f'listener_dm_cursor_{self.account_uid}_{self.settings.owner_uid}'
         feed_key = f'listener_reply_cursor_{self.account_uid}'
-        at_key = f'listener_at_cursor_{self.account_uid}'
         messages, has_more = await self.bili.private_messages(self.settings.owner_uid)
         messages = sorted(messages, key=lambda m: int(m.get('msg_seqno') or 0))
         dm_cursor = self._cursor(dm_key)
         feed_cursor = self._cursor(feed_key)
-        at_cursor = self._cursor(at_key)
         if dm_cursor is None:
             self._set_cursor(dm_key, max((int(m.get('msg_seqno') or 0) for m in messages), default=0))
         if feed_cursor is None:
             feed = await self.bili.reply_notifications()
             self._set_cursor(feed_key, max((int(m.get('id') or 0) for m in feed.get('items') or []), default=0))
-        if at_cursor is None:
-            feed = await self.bili.at_notifications()
-            self._set_cursor(at_key, max((int(m.get('id') or 0) for m in feed.get('items') or []), default=0))
-        if dm_cursor is None or feed_cursor is None or at_cursor is None:
-            self.output('已记录当前消息位置；旧私信、旧评论回复和旧 @ 不会自动处理。')
+        if dm_cursor is None or feed_cursor is None:
+            self.output('已记录当前消息位置；启动前的旧私信、旧回复和旧 @ 不会自动处理。')
+            log.info('消息监听已记录当前消息位置，旧消息不自动处理')
             return 0
 
         # The first page may not contain every new message. Stop instead of silently skipping any.
@@ -210,6 +215,7 @@ class MessageListener:
         if budget <= 0:
             return 0
         sent = 0
+        log.debug('检查消息：私信 %d 条，私信游标 %s，通知游标 %s', len(messages), dm_cursor, feed_cursor)
         for item in messages:
             seq = int(item.get('msg_seqno') or 0)
             if seq <= dm_cursor:
@@ -229,6 +235,7 @@ class MessageListener:
                 if reference and not body:
                     body = '看看这条视频。'
                 if isinstance(body, str) and body.strip():
+                    log.info('收到大号新私信 seq=%s', seq)
                     if self.settings.dry_run:
                         self.output(f'DRY_RUN：收到大号新私信 {seq}，未发送。')
                     else:
@@ -269,92 +276,140 @@ class MessageListener:
                                     raise
                                 self.store.update_dm_reply(self.account_uid, self.settings.owner_uid, msg_key, 'ok')
                                 self.output(f'已回复大号私信 {seq}。')
+                                log.info('已回复大号私信 seq=%s', seq)
                                 sent += 1
             self._set_cursor(dm_key, seq)
             dm_cursor = seq
 
         if sent < budget:
             notifications = await self._new_notifications(feed_cursor)
+            cutoff = time.time() - self.settings.listener_max_age_hours * 3600
             for item in notifications:
                 ident = int(item.get('id') or 0)
                 if sent >= budget:
                     break
-                detail = item.get('item') or {}
-                if (detail.get('business_id') == 1 and str((item.get('user') or {}).get('mid')) != str(self.account_uid)):
-                    aid = int(detail.get('subject_id') or 0)
-                    root = int(detail.get('root_id') or 0)
-                    parent = int(detail.get('source_id') or 0)
-                    comment = self.store.own_comment_by_root(aid, root) if aid and root else None
-                    if comment and parent and parent != root and self.store.reply_count(comment['id']) < self.settings.max_replies:
-                        body = detail.get('source_content') or ''
-                        if isinstance(body, str) and body.strip() and safe_reply(body):
-                            if self.settings.dry_run:
-                                self.output(f'DRY_RUN：收到评论回复 {parent}，未发送。')
-                            elif not self.store.reply_exists(comment['id'], parent):
-                                try:
-                                    answer = (await self.runner.reply(body, comment) if self.runner.reply
-                                              else await self.runner._model_reply(body, comment))
-                                except Exception as exc:
-                                    self.output(f'评论回复 {parent} 生成失败：{exc}')
-                                    answer = ''
-                                if self._valid_text(answer, public=True) and self.store.save_reply(comment['id'], parent, None, answer, 'pending'):
-                                    await self.runner._wait_write()
-                                    try:
-                                        result = await self.bili.comment(aid, answer, root=root, parent=parent)
-                                    except Exception:
-                                        self.store.update_reply(comment['id'], parent, None, 'failed')
-                                        raise
-                                    rpid = ((result.get('data') or {}).get('reply') or {}).get('rpid')
-                                    self.store.update_reply(comment['id'], parent, rpid, 'ok')
-                                    self.output(f'已回复评论 {parent}。')
-                                    sent += 1
+                when = int(item.get('reply_time') or item.get('at_time') or 0)
+                if when > 1_000_000_000 and when < cutoff:
+                    log.info('跳过过期通知 %s：早于 %s 小时', ident, self.settings.listener_max_age_hours)
+                else:
+                    sent += await self._handle_notification(item)
                 self._set_cursor(feed_key, ident)
                 feed_cursor = ident
-
-        if sent < budget:
-            notifications = await self._new_at_notifications(at_cursor)
-            for item in notifications:
-                ident = int(item.get('id') or 0)
-                if sent >= budget:
-                    break
-                detail = item.get('item') or {}
-                author = str((item.get('user') or {}).get('mid'))
-                aid = int(detail.get('subject_id') or 0)
-                parent = int(detail.get('source_id') or 0)
-                root = int(detail.get('root_id') or parent)
-                body = detail.get('source_content') or ''
-                if (detail.get('business_id') == 1 and author == str(self.settings.owner_uid)
-                        and aid > 0 and parent > 0 and isinstance(body, str) and body.strip()
-                        and not self.store.own_comment_by_root(aid, root)):
-                    if self.settings.dry_run:
-                        self.output(f'DRY_RUN：收到大号视频评论 @ {ident}，未发送。')
-                    else:
-                        try:
-                            video, context = await self._video_context(('aid', aid))
-                            self.store.save_video_memory(
-                                self.account_uid, self.settings.owner_uid, video.get('bvid') or '',
-                                self._memory_context(video, context), bool(context))
-                            answer = (await self._model_public_video(body, context) if context
-                                      else self._no_subtitles_answer(video))
-                        except Exception as exc:
-                            if isinstance(exc, BiliError) and exc.stop_run:
-                                raise
-                            self.output(f'视频评论 @ {ident} 生成回复失败：{exc}')
-                            answer = ''
-                        if self._valid_text(answer, public=True) and self.store.claim_mention_reply(self.account_uid, ident):
-                            await self.runner._wait_write()
-                            try:
-                                await self.bili.comment(aid, answer, root=root, parent=parent)
-                            except Exception:
-                                self.store.update_mention_reply(self.account_uid, ident, 'failed')
-                                raise
-                            self.store.update_mention_reply(self.account_uid, ident, 'ok')
-                            self.output(f'已回复大号视频评论 @ {ident}。')
-                            sent += 1
-                self._set_cursor(at_key, ident)
-                at_cursor = ident
+        if sent:
+            log.info('本轮消息处理完成，发送 %s 条', sent)
         self.sent_total += sent
         return sent
+
+    async def _handle_notification(self, item):
+        ident = int(item.get('id') or 0)
+        detail = item.get('item') or {}
+        author = str((item.get('user') or {}).get('mid'))
+        if int(detail.get('business_id') or 0) != 1:
+            log.debug('忽略通知 %s：业务类型 %s 不是视频评论', ident, detail.get('business_id'))
+            return 0
+        if author == str(self.account_uid):
+            log.debug('忽略通知 %s：由小号自己触发', ident)
+            return 0
+        aid = int(detail.get('subject_id') or 0)
+        source = int(detail.get('source_id') or 0)
+        root = int(detail.get('root_id') or source)
+        body = detail.get('source_content') or detail.get('title') or ''
+        if aid <= 0 or source <= 0 or not isinstance(body, str) or not body.strip():
+            log.debug('忽略通知 %s：缺少视频或评论内容', ident)
+            return 0
+        mentioned = any(str(member.get('mid')) == str(self.account_uid)
+                        for member in detail.get('at_details') or [] if isinstance(member, dict))
+        own = self.store.own_comment_by_root(aid, root) if root else None
+        if mentioned:
+            if author != str(self.settings.owner_uid):
+                log.info('收到非大号的 @ 通知 %s，按配置忽略', ident)
+                return 0
+            return await self._reply_to_mention(ident, aid, source, root, body, own)
+        if own and source != root and self.store.reply_count(own['id']) < self.settings.max_replies:
+            return await self._reply_to_thread(own, aid, source, root, body)
+        log.debug('忽略通知 %s：不是 @ 小号，也不是小号评论下的新回复', ident)
+        return 0
+
+    async def _reply_to_mention(self, ident, aid, source, root, body, own):
+        """Reply publicly to an owner @, including @s outside the account's own comment threads."""
+        if own:
+            if self.store.reply_exists(own['id'], source):
+                log.info('@ 通知 %s 已作为评论回复处理过，跳过', ident)
+                return 0
+            if self.store.reply_count(own['id']) >= self.settings.max_replies:
+                log.info('@ 通知 %s 所在评论已达自动回复上限，跳过', ident)
+                return 0
+        if not safe_reply(body):
+            log.info('@ 通知 %s 的内容未通过安全过滤，跳过', ident)
+            return 0
+        if self.settings.dry_run:
+            self.output(f'DRY_RUN：收到大号视频评论 @ {ident}，未发送。')
+            return 0
+        if not self.store.claim_mention_reply(self.account_uid, ident):
+            log.info('@ 通知 %s 已处理过，跳过', ident)
+            return 0
+        try:
+            video, context = await self._video_context(('aid', aid))
+            self.store.save_video_memory(
+                self.account_uid, self.settings.owner_uid, video.get('bvid') or '',
+                self._memory_context(video, context), bool(context))
+            answer = (await self._model_public_video(body, context) if context
+                      else self._no_subtitles_answer(video))
+        except Exception as exc:
+            self.store.update_mention_reply(self.account_uid, ident, 'failed')
+            if isinstance(exc, BiliError) and exc.stop_run:
+                raise
+            self.output(f'视频评论 @ {ident} 生成回复失败：{exc}')
+            return 0
+        if not self._valid_text(answer, public=True):
+            self.store.update_mention_reply(self.account_uid, ident, 'skipped')
+            self.output(f'视频评论 @ {ident} 的模型回复不合规，未发送。')
+            return 0
+        await self.runner._wait_write()
+        try:
+            result = await self.bili.comment(aid, answer, root=root, parent=source)
+        except Exception:
+            self.store.update_mention_reply(self.account_uid, ident, 'failed')
+            raise
+        rpid = ((result.get('data') or {}).get('reply') or {}).get('rpid')
+        if own:
+            self.store.save_reply(own['id'], source, rpid, answer, 'ok')
+        self.store.update_mention_reply(self.account_uid, ident, 'ok')
+        self.output(f'已回复大号视频评论 @ {ident}。')
+        log.info('已公开回复 @ 通知 %s：视频 aid=%s，评论 root=%s parent=%s，RPID=%s',
+                 ident, aid, root, source, rpid)
+        return 1
+
+    async def _reply_to_thread(self, comment, aid, source, root, body):
+        if not safe_reply(body):
+            log.info('评论回复 %s 的内容未通过安全过滤，跳过', source)
+            return 0
+        if self.settings.dry_run:
+            self.output(f'DRY_RUN：收到评论回复 {source}，未发送。')
+            return 0
+        if self.store.reply_exists(comment['id'], source):
+            log.info('评论回复 %s 已处理过，跳过', source)
+            return 0
+        try:
+            answer = (await self.runner.reply(body, comment) if self.runner.reply
+                      else await self.runner._model_reply(body, comment))
+        except Exception as exc:
+            self.output(f'评论回复 {source} 生成失败：{exc}')
+            answer = ''
+        if not self._valid_text(answer, public=True) or not self.store.save_reply(
+                comment['id'], source, None, answer, 'pending'):
+            return 0
+        await self.runner._wait_write()
+        try:
+            result = await self.bili.comment(aid, answer, root=root, parent=source)
+        except Exception:
+            self.store.update_reply(comment['id'], source, None, 'failed')
+            raise
+        rpid = ((result.get('data') or {}).get('reply') or {}).get('rpid')
+        self.store.update_reply(comment['id'], source, rpid, 'ok')
+        self.output(f'已回复评论 {source}。')
+        log.info('已回复小号评论下的新回复 %s（RPID %s）', source, rpid)
+        return 1
 
     async def _new_notifications(self, cursor):
         found = []
@@ -370,21 +425,6 @@ class MessageListener:
             if not offset_id:
                 break
         raise RuntimeError('评论回复通知超过读取上限，已停止监听，请人工检查')
-
-    async def _new_at_notifications(self, cursor):
-        found = []
-        offset_id = at_time = None
-        for _ in range(3):
-            feed = await self.bili.at_notifications(offset_id=offset_id, at_time=at_time)
-            page = feed.get('items') or []
-            found.extend(item for item in page if int(item.get('id') or 0) > cursor)
-            if not page or any(int(item.get('id') or 0) <= cursor for item in page) or (feed.get('cursor') or {}).get('is_end'):
-                return sorted(found, key=lambda item: int(item.get('id') or 0))
-            offset_id = (feed.get('cursor') or {}).get('id')
-            at_time = (feed.get('cursor') or {}).get('time')
-            if not offset_id:
-                break
-        raise RuntimeError('@ 通知超过读取上限，已停止监听，请人工检查')
 
     async def run_forever(self):
         self.output('开始监听大号私信、视频评论 @ 和自己评论下的新回复；按 Ctrl+C 停止。不会主动刷视频。')

@@ -1,12 +1,27 @@
 # Study Scout
 
-> 公开点赞、收藏、评论及自动回复可能触发 B 站限流或封禁。只使用专用小号。默认 `DRY_RUN=true`。新安装要求目标账号通知验收；本地配置可以明确关闭验收门禁。
+本地运行的 B 站学习内容筛选助手：按主题搜索视频，结合标题、简介和字幕让模型评分，入选后点赞、收藏、评论、@ 或私信分享，并自动回复大号的私信和 @。
 
-独立 Python 3.12 项目。默认启动后在终端扫码，登录成功立即筛选一轮，之后每 10 分钟再筛选一轮，同时检查新私信、评论回复和 @ 通知。本机网页展示结果，也能手动触发一轮。程序在前台运行，关闭终端或按 `Ctrl+C` 即停止；第一版仅接 B 站，抖音只保留 adapter 接口。
+> 公开点赞、收藏、评论和自动回复可能触发 B 站限流或封禁，请只使用专用小号。新安装默认 `DRY_RUN=true`。
 
-## 安装与配置
+## 功能
 
-在 PowerShell 中运行：
+- 按 `STUDY_TOPICS` 逐词搜索并交错挑选候选，不再依赖泛推荐流。
+- 模型按人设评估实用、好玩、启发、审美和放松等看点；有字幕的视频至少 70 分才入选。
+- 点赞、收藏由模型独立建议，并分别达到 `BILI_LIKE_MIN_SCORE`、`BILI_FAVORITE_MIN_SCORE`。
+- 分享方式可选：只私信、评论 @ 大号、评论 @ 并私信。
+- 评论后匿名回查公开可见性；回查不到时停止后续评论，避免继续无效写入。
+- 监听大号私信、小号评论下的新回复，以及 **大号在视频评论中对小号的 @**。
+- 本机页面展示轮次、评分、跳过原因、互动结果和评论可见性。
+- 终端与滚动文件日志记录完整运行过程。
+
+## 环境
+
+- Python 3.12
+- Windows PowerShell（`scripts/start.ps1`）
+- 可访问 B 站和 OpenAI 兼容模型接口
+
+## 安装
 
 ```powershell
 py -3.12 -m venv .venv
@@ -14,91 +29,116 @@ py -3.12 -m venv .venv
 Copy-Item .env.example .env
 ```
 
-直接编辑项目根目录的 `.env`。所有配置项在 [.env.example](.env.example) 中都有中文注释；文件中的值优先于同名环境变量，修改后重新启动即可生效。`MODEL_BASE_URL` 填 OpenAI 兼容 API 的基础地址，不附加 `/chat/completions`。Cookie 不写进配置文件，每次需要访问 B 站时重新扫码，只保存在本次进程内存中。`.env` 和 `data/` 已被 Git 忽略。
+## 配置
 
-- `STUDY_TOPICS` 是喜欢看的主题词，英文逗号分隔。程序分别搜索这些主题，交错挑选候选视频，再让模型根据兴趣和字幕筛选；不再先从泛推荐流凑满 5 条。
-- `STUDY_PERSONA` 是自由填写的一行人设说明。模型据此判断视频、生成公开评论草稿、回复自己评论下的新回复、与配置的大号私信聊天。字幕和他人消息仍视为不可信内容。
-- `BILI_SHARE_METHOD=private_message`（默认）：普通评论后私信大号。`comment_mention`：评论中 @ 大号，不发私信。`both`：评论中 @ 大号，同时私信视频链接和看点。评论接口未识别到目标 UID 时停止本轮，不再发私信。
-- 模型按兴趣评估实用、好玩、启发、审美和放松等看点；有字幕视频的推荐分数至少 70 才会评论。点赞、收藏还需模型分别建议并达到 `BILI_LIKE_MIN_SCORE`（默认 75）、`BILI_FAVORITE_MIN_SCORE`（默认 85）。无字幕视频仅根据标题和简介判断“可能有趣”，入选后只私信大号，不公开点赞、收藏或评论；私信会写明没有核对画面。
-- 评论接口成功后，程序用不带登录 Cookie 的公开接口先查最新一页，未找到再按 RPID 定点查询，并在网页标记“匿名公开接口已查到”或“公开可见未确认”。匿名查询没查到仍不能证明评论被隐藏；不会自动补发，后续轮次继续按限速运行。
-- `DRY_RUN=true` 时只在本地记录评论与分享草稿，不执行点赞、收藏、评论、私信或回复。
-- `BILI_RUN_INTERVAL_MINUTES=10` 是两轮视频筛选之间的等待时间，从上一轮结束时起算，最低 10 分钟。网页手动轮次结束后会重新计时。
+编辑项目根目录的 `.env`，各项含义见 [.env.example](.env.example)。文件中的值优先于同名环境变量，修改后重启生效。
 
-新安装默认保持 `DRY_RUN=true`，并要求目标账号确认收到 @ 通知。若明确接受新小号未经通知验收就真实互动，可在本地 `.env` 设置 `DRY_RUN=false` 和 `BILI_REQUIRE_NOTIFICATION_CONFIRMATION=false`；接口成功不保证评论或私信对大号可见。旧小号的历史数据应与新小号隔离。
+必须配置：
 
-## 启动与停止
+| 配置 | 说明 |
+|---|---|
+| `BILI_OWNER_UID` | 接收分享的大号 UID |
+| `BILI_OWNER_NAME` | 大号准确昵称，评论 @ 模式需要 |
+| `MODEL_BASE_URL` | OpenAI 兼容接口基础地址，不带 `/chat/completions` |
+| `MODEL_API_KEY` / `MODEL_NAME` | 模型密钥和模型名 |
+
+常用开关：
+
+- `BILI_SHARE_METHOD`：`private_message`（默认，只私信）、`comment_mention`（只评论 @）、`both`（评论 @ 并私信）。
+- `DRY_RUN`：默认 `true`，只生成草稿，不执行写操作。
+- `BILI_REQUIRE_NOTIFICATION_CONFIRMATION`：默认 `true`，需先确认大号收到测试评论的 @ 通知才允许真实互动。
+- `BILI_LISTENER_MAX_AGE_HOURS`：只处理最近多少小时内的回复和 @，默认 24。
+
+Cookie 不写入配置文件：每次启动重新扫码，只保存在当前进程内存。
+
+## 运行
 
 ```powershell
 .\scripts\start.ps1
 ```
 
-终端显示二维码和临时登录链接。扫码前只等待登录；二维码过期或等待超时会自动刷新，直到扫码成功或手动停止。登录成功后页面地址为 [http://127.0.0.1:8765/](http://127.0.0.1:8765/)；先运行一轮，此后默认每 10 分钟运行一轮。视频轮次之间按 `BILI_LISTEN_INTERVAL_SECONDS` 检查消息。每轮最多检查 5 条视频，写操作之间随机等待 5～20 秒。运行失败或触发 412/-509 等风控时停止自动轮次，不会定时重试；重新启动需再次扫码。按 `Ctrl+C` 停止整个服务。单次运行仍可用 `.\scripts\start.ps1 run`。
+1. 终端显示二维码和临时登录链接，用专用小号扫码。
+2. 登录后立即筛选一轮，之后每 `BILI_RUN_INTERVAL_MINUTES` 分钟一轮。
+3. 轮次之间按 `BILI_LISTEN_INTERVAL_SECONDS` 检查私信和通知。
+4. 网页地址：<http://127.0.0.1:8765/>。
+5. 按 `Ctrl+C` 停止整个服务。
 
-## 本机展示页
+程序启动时只记录当前消息位置；启动前已经收到的私信、回复和 @ 不会补回复，需要时在大号侧重新发一次。
 
-默认常驻服务会同时提供网页，无需另开终端。页面显示轮次统计、检查的视频、入选理由、跳过原因和互动结果；点“手动刷一轮”即可立即触发，运行中或已有手动请求时不会重复入队。页面醒目显示 `DRY_RUN` 或真实互动状态。私信聊天正文不在网页展示。
-
-若只想查看历史记录、不扫码也不提供手动按钮，可单独运行：
-
-```powershell
-.\scripts\start.ps1 dashboard
-```
-
-网页只监听 `127.0.0.1`。手动按钮只在已扫码的常驻服务中出现，使用同一进程的登录态、限速和熔断；独立 `dashboard` 命令仍只读。`dashboard` 与常驻服务占用同一端口，不能同时启动。
-
-页面没有配置表单，不展示模型密钥和 Cookie。“检查的视频”指程序读取过视频详情，并不代表真人播放过；历史数据中原先未记录的跳过原因无法补回。评论和私信的“接口已接受”不等于公开可见或实际送达。
-
-同一时刻只允许一个扫码或运行实例；第二个终端会直接退出。如果升级时旧版 Web 服务仍在运行，启动脚本会根据旧 `data/server.pid` 拒绝启动，并提示核对进程后停止旧服务。
-
-## 终端命令
-
-下面的命令都通过 `start.ps1` 调用。`status`、`dashboard` 和通知确认命令无需扫码；其余命令每次都重新扫码。
+只运行一轮：
 
 ```powershell
-.\scripts\start.ps1 status
-.\scripts\start.ps1 check-replies
+.\scripts\start.ps1 run
 ```
 
-`check-replies` 只检查程序记录的自己一级评论；在 `DRY_RUN=true` 或此前的真实操作门禁未确认时不会发回复。每条评论最多自动回复三次，回复遵循 `STUDY_PERSONA`。单次 `run` 在真实操作模式下结束时也检查一次；默认常驻服务由消息监听处理新回复。
-
-只监听新消息、不定时刷视频时，可单独启动：
+只监听消息、不主动刷视频：
 
 ```powershell
 .\scripts\start.ps1 listen
 ```
 
-扫码成功后，程序读取 `BILI_OWNER_UID` 对应的私信，以及 B 站回复和 @ 通知。首次启动先记下已有消息位置，旧消息不会自动补发；后续给大号的新文字私信生成模型回复，回复别人对**本项目记录的自己一级评论**的新回复。大号私信发送视频卡片或 BV 链接、或在视频评论区 @ 小号时，程序读取该视频详情与可用字幕，再按人设回复。只有标题和简介、没有字幕时会明确说无法确认画面和讲解；不会下载视频或分析画面、声音，也不会因为你分享视频就自动点赞、收藏、转发。评论区 @ 会在原评论下公开回复；仅响应配置的大号 UID。单独 `listen` 不主动搜索视频。
-
-最近一条由大号分享的视频会保留有限的详情和字幕上下文到本地 `data/` 数据库，供随后私信追问使用；评论区 @ 分享后转到私信追问也能接上。只在提问明显指向前一条视频时使用，换了话题不会主动提起。默认有效 2 小时，可通过 `.env` 中的 `BILI_VIDEO_MEMORY_HOURS` 设为 1～24 小时；换小号或大号不会串用。无字幕时，后续追问仍会明确说明无法确认讲解内容。再次在评论区提问需 @ 小号。
-
-默认每 60 秒检查一次，每次最多发送 5 条、每次启动最多 20 条；达到上限自动退出，按 `Ctrl+C` 可随时停止。改动 `.env` 中带中文注释的 `BILI_LISTEN_*` 项可收紧限额，不能突破程序上限。`DRY_RUN=true` 时只读取新消息并在终端提示，不发送、不推进真实模式的消息位置。真实模式是否要求已确认的 @ 通知由 `BILI_REQUIRE_NOTIFICATION_CONFIRMATION` 控制；私信或评论发送失败不会自动重发或改用另一种方式；412/-509 等风控错误会停止监听。模型生成的私信和评论可能不准确，请查看终端结果。
-
-如果将来要重新进行 @ 通知验收，先在 `.env` 配好准确的目标 UID 和昵称，然后**主动执行**：
+只读展示页（不扫码、不提供手动按钮，与常驻服务共用 8765 端口）：
 
 ```powershell
-.\scripts\start.ps1 verify-mention BVxxxxxxxxxx
-.\scripts\start.ps1 status
-.\scripts\start.ps1 confirm-notification 123
-# 若目标账号未收到站内 @ 通知，改用：
-.\scripts\start.ps1 notification-missing 123
+.\scripts\start.ps1 dashboard
 ```
 
-上面的 `123` 是示例，替换为 `status` 显示的实际评论 ID。
-
-`verify-mention` 会真实发送一条公开测试评论，即使 `DRY_RUN=true` 也一样。只有接口返回的 `members` 包含目标 UID，且你在目标账号确认收到站内 @ 通知后，才用 `confirm-notification` 解锁。未收到时用 `notification-missing` 保持锁定，不自动重发；若通知后来送达，可对同一评论执行 `confirm-notification`。真实模式还需手动将 `.env` 中的 `DRY_RUN` 改为 `false`。写操作之间随机等待 5～20 秒；遇到 412、-509、验证码或频率限制立即停止本轮，不自动重试。
-
-私信发送使用 B 站网页客户端的接口。专用小号到配置大号的测试私信已由用户确认送达；更换账号后应重新验收。先配置大号 UID，保持 `DRY_RUN=true`，可主动执行一次：
+其他命令：
 
 ```powershell
+.\scripts\start.ps1 status
+.\scripts\start.ps1 check-replies
+.\scripts\start.ps1 verify-mention BVxxxxxxxxxx
+.\scripts\start.ps1 confirm-notification 123
+.\scripts\start.ps1 notification-missing 123
 .\scripts\start.ps1 verify-private-message
 ```
 
-扫码后此命令**仍会真实发送一条测试私信**，但不会点赞、收藏或评论。请用大号确认私信实际收到，再自行决定是否将 `DRY_RUN` 改为 `false`；接口接受消息不等于送达。评论接口返回成功也不等于评论对其他账号公开可见，需由其他账号检查。
+`verify-mention` 和 `verify-private-message` 会真实发送测试内容，即使 `DRY_RUN=true`。`verify-mention` 还会匿名回查这条测试评论；匿名接口看不到时命令返回非零，可直接判断小号是否被限制。单实例运行：同一时刻只允许一个扫码或运行进程。
 
-## 离线测试
+首次真实互动前建议先做通知验收：
+
+1. 执行 `verify-mention BVxxxxxxxxxx`，用大号确认站内 @ 通知。
+2. 用 `status` 查到评论 ID，执行 `confirm-notification <评论ID>`。
+3. 未收到通知时执行 `notification-missing <评论ID>`，保持真实互动锁定。
+
+`BILI_REQUIRE_NOTIFICATION_CONFIRMATION=false` 可以跳过验收，但不代表评论或私信能被对方看到。
+
+## 评论可见性
+
+B 站会对低等级、低信任账号的评论做静默限制：接口返回成功和 RPID，但未登录用户看不到，常见于新注册小号。
+
+程序的处理：
+
+1. 发表评论后用不带登录 Cookie 的接口按 RPID 回查。
+2. 回查成功记为“匿名公开接口已查到”。
+3. 回查不到记为“疑似仅自己可见”，并暂停本次运行后续的自动评论；点赞、收藏和私信不受影响。
+4. 网页顶部和终端日志会明确提示。
+
+如果持续出现不可见，先提升账号等级（答题转正、绑定手机），或把 `BILI_SHARE_METHOD` 改为 `private_message`，用私信完成分享。
+
+## 日志
+
+- 终端：按级别输出启动配置、登录账号、每轮进度、判断结果、写操作、回查结果和错误。
+- 文件：`data/study-scout.log`，单文件 2 MB，保留 3 个备份。
+- `412`、`-509`、验证码或频率限制会立即停止自动轮次，不自动重试。
+
+## 测试
 
 ```powershell
 .\.venv\Scripts\python.exe -m pytest tests -q --basetemp=.pytest_tmp
 ```
 
-测试只使用进程内 fake B 站服务和临时 SQLite，不读取项目 `.env`、不使用真实 Cookie。接口记录和 @ 验证状态见 [BILI_API.md](docs/BILI_API.md)。
+测试只使用进程内 fake B 站服务和临时 SQLite，不读取项目 `.env`，不使用真实 Cookie。
+
+## 文档
+
+- [docs/DESIGN.md](docs/DESIGN.md)：模块、数据流和状态机
+- [docs/BILI_API.md](docs/BILI_API.md)：使用的接口、通知来源和验收方法
+
+## 已知限制
+
+- 评论是否公开由 B 站风控决定，程序只能检测并停止，不能保证通过。
+- 视频内容只依据标题、简介和字幕；不下载视频，不做语音转写或画面分析。
+- 抖音仅保留 adapter 接口，未实现。
+- 自动回复每次登录有总条数上限，达到上限后需重新启动。

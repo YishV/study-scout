@@ -27,10 +27,12 @@ def notice(ident, root=55, uid=8, body='怎么做？'):
                      'source_id': ident + 100, 'source_content': body}}
 
 
-def at_notice(ident, uid=42, body='@小号 这个视频讲得怎么样？', aid=1):
-    return {'id': ident, 'at_time': ident, 'user': {'mid': uid},
+def at_notice(ident, uid=42, body='@小号 这个视频讲得怎么样？', aid=1, mentioned=99):
+    # B 站把视频评论里的 @ 放进 /x/msgfeed/reply，用 at_details 标出被 @ 的账号。
+    return {'id': ident, 'reply_time': ident, 'user': {'mid': uid},
             'item': {'business_id': 1, 'subject_id': aid, 'root_id': 0,
-                     'source_id': ident + 200, 'source_content': body}}
+                     'source_id': ident + 200, 'source_content': body,
+                     'at_details': [{'mid': mentioned}] if mentioned else []}}
 
 
 def ready_store(tmp_path):
@@ -227,12 +229,15 @@ async def test_listen_command_scans_then_reads_messages_without_video_browsing(t
 def test_listener_config_is_bounded_and_chinese_documented(tmp_path):
     path = tmp_path / '.env'
     path.write_text('BILI_LISTEN_INTERVAL_SECONDS=60\nBILI_LISTEN_MAX_PER_CYCLE=2\n'
-                    'BILI_LISTEN_MAX_PER_SESSION=10\n', encoding='utf-8')
+                    'BILI_LISTEN_MAX_PER_SESSION=10\nBILI_LISTENER_MAX_AGE_HOURS=12\n', encoding='utf-8')
     settings = Settings.from_env(path)
     assert (settings.listen_interval_seconds, settings.listen_max_per_cycle,
-            settings.listen_max_per_session) == (60, 2, 10)
+            settings.listen_max_per_session, settings.listener_max_age_hours) == (60, 2, 10, 12)
     path.write_text('BILI_LISTEN_INTERVAL_SECONDS=5\n', encoding='utf-8')
     with pytest.raises(ValueError, match='至少为 60'):
+        Settings.from_env(path)
+    path.write_text('BILI_LISTENER_MAX_AGE_HOURS=200\n', encoding='utf-8')
+    with pytest.raises(ValueError, match='1～168'):
         Settings.from_env(path)
 
 
@@ -297,7 +302,7 @@ async def test_owner_at_on_other_video_reads_subtitles_and_publicly_replies(tmp_
     fake, calls = make_fake_bili()
     store, _ = ready_store(tmp_path)
     fake.state.dm_messages.append(dm(10))
-    fake.state.at_notifications.append(at_notice(10))
+    fake.state.reply_notifications.append(at_notice(10))
     settings = Settings(owner_uid=42, dry_run=False, model_name='fake',
                         model_base_url='https://model.test', model_api_key='fake')
     requests = []
@@ -311,7 +316,7 @@ async def test_owner_at_on_other_video_reads_subtitles_and_publicly_replies(tmp_
         listener = MessageListener(settings, store, BiliClient(http, 'SESSDATA=x; bili_jct=csrf'),
                                    model_http=model, sleep=lambda _: asyncio.sleep(0))
         assert await listener.poll_once() == 0
-        fake.state.at_notifications.extend([at_notice(11, uid=77), at_notice(12)])
+        fake.state.reply_notifications.extend([at_notice(11, uid=77), at_notice(12)])
         assert await listener.poll_once() == 1
         assert await listener.poll_once() == 0
     writes = [form for path, form in calls if path == 'x/v2/reply/add']
@@ -356,7 +361,7 @@ async def test_video_card_with_aid_is_supported_and_risk_error_stops(tmp_path):
         async def risk(_aid):
             raise BiliError(412, '风控')
         bili.detail_by_aid = risk
-        fake.state.at_notifications.append(at_notice(11))
+        fake.state.reply_notifications.append(at_notice(11))
         with pytest.raises(BiliError) as exc:
             await listener.poll_once()
         assert exc.value.stop_run
@@ -482,7 +487,7 @@ async def test_owner_at_video_can_be_followed_up_in_dm(tmp_path):
         listener = MessageListener(settings, store, BiliClient(http, 'SESSDATA=x; bili_jct=csrf'),
                                    model_http=model, sleep=lambda _: asyncio.sleep(0))
         await listener.poll_once()
-        fake.state.at_notifications.append(at_notice(11))
+        fake.state.reply_notifications.append(at_notice(11))
         assert await listener.poll_once() == 1
         fake.state.dm_messages.append(dm(11, body='刚才那条具体怎么操作？'))
         assert await listener.poll_once() == 1

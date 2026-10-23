@@ -1,6 +1,7 @@
 """The command line tests use only the in-process fake Bilibili service."""
 
 import asyncio
+import os
 import subprocess
 import sys
 import time
@@ -26,6 +27,25 @@ def fake_judge(*_):
         'like_recommended': True,
         'favorite_recommended': True,
     })
+
+
+def test_configure_logging_writes_terminal_and_rotating_file(tmp_path):
+    source = Path(__file__).resolve().parents[1] / 'src'
+    log_path = tmp_path / 'logs' / 'study.log'
+    code = (
+        "import logging\n"
+        "from pathlib import Path\n"
+        "from study_scout.main import configure_logging\n"
+        "configure_logging(log_path=Path(r'" + str(log_path) + "'))\n"
+        "logging.getLogger('study_scout.test').info('终端与文件日志')\n"
+        "for handler in logging.getLogger().handlers: handler.flush()\n"
+    )
+    env = {**os.environ, 'PYTHONPATH': str(source), 'PYTHONIOENCODING': 'utf-8'}
+    result = subprocess.run([sys.executable, '-c', code], capture_output=True, text=True,
+                            encoding='utf-8', env=env)
+    assert result.returncode == 0, result.stderr
+    assert '终端与文件日志' in result.stdout
+    assert '终端与文件日志' in log_path.read_text(encoding='utf-8')
 
 
 def test_login_qr_fits_a_normal_terminal():
@@ -246,6 +266,21 @@ async def test_verify_mention_is_explicit_and_does_not_unlock_writes(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_verify_mention_reports_hidden_comment(tmp_path):
+    fake, calls = make_fake_bili(public_comment_visible=False)
+    store = Store(tmp_path / 'test.db')
+    store.init()
+    settings = Settings(owner_uid=42, owner_name='示例用户', dry_run=True)
+    messages = []
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=fake), base_url='https://fake.test') as http:
+        result = await cli.run_command('verify-mention', settings, store, bvid='BV1test', bili_http=http,
+                                       sleep=lambda _: asyncio.sleep(0), output=messages.append)
+    assert result == 1
+    assert any('匿名接口不可见' in line for line in messages)
+    assert store.dashboard_data()['videos'][0]['comments'][0]['visibility_status'] == 'unconfirmed'
+
+
+@pytest.mark.asyncio
 async def test_verify_private_message_only_sends_one_test_dm(tmp_path):
     fake, calls = make_fake_bili()
     store = Store(tmp_path / 'test.db')
@@ -260,6 +295,14 @@ async def test_verify_private_message_only_sends_one_test_dm(tmp_path):
     assert not any(path in ('x/web-interface/archive/like', 'x/v3/fav/resource/deal', 'x/v2/reply/add')
                    for path, _ in calls)
     assert any('目标账号检查' in line for line in messages)
+
+
+def test_env_example_is_a_valid_configuration():
+    example = Path(__file__).resolve().parents[1] / '.env.example'
+    settings = Settings.from_env(example)
+    assert settings.share_method == 'private_message'
+    assert settings.dry_run is True
+    assert settings.listener_max_age_hours == 24
 
 
 def test_env_file_is_the_editable_config_source(tmp_path, monkeypatch):

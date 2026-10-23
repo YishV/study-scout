@@ -10,6 +10,14 @@ from .wbi import sign_params
 
 log = logging.getLogger(__name__)
 
+_BROWSER_UA = ('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
+               '(KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36')
+_BASE_HEADERS = {
+    'User-Agent': _BROWSER_UA,
+    'Accept': 'application/json, text/plain, */*',
+    'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.6',
+}
+
 
 class BiliError(Exception):
     def __init__(self, code, message=''):
@@ -24,23 +32,49 @@ class BiliClient:
         self.public_http = public_http or http
         self.cookie = cookie
         self._keys = None
+        self._identity = None
+        self._buvid_loaded = False
         self._dm_device_id = str(uuid.uuid4()).upper()
 
     def set_cookie(self, cookie):
         self.cookie = cookie
+        self._identity = None
+        self._buvid_loaded = False
 
     @property
     def csrf(self):
         return next((part.strip().split('=', 1)[1] for part in self.cookie.split(';') if part.strip().startswith('bili_jct=')), '')
 
+    async def ensure_buvid(self):
+        """Add the device ids the web client sends; some write APIs flag requests without them."""
+        if self._buvid_loaded or not self.cookie:
+            return
+        self._buvid_loaded = True
+        try:
+            data = (await self.request('GET', '/x/frontend/finger/spi')).get('data') or {}
+        except Exception as exc:
+            log.debug('获取 buvid 失败：%s', exc)
+            return
+        existing = {part.strip().split('=', 1)[0] for part in self.cookie.split(';')}
+        extra = [f'{name}={value}' for name, value in (('buvid3', data.get('b_3')), ('buvid4', data.get('b_4')))
+                 if value and name not in existing]
+        if extra:
+            self.cookie = '; '.join([self.cookie, *extra])
+
     async def request(self, method, path, *, params=None, data=None, auth=False):
-        if auth and not self.csrf:
-            raise BiliError(-1, '未扫码登录')
+        if auth:
+            if not self.csrf:
+                raise BiliError(-1, '未扫码登录')
+            await self.ensure_buvid()
         host = urlparse(path).hostname or self.http.base_url.host
         api_host = self.http.base_url.host
-        headers = {'User-Agent': 'Mozilla/5.0 StudyScout/0.1'}
+        headers = dict(_BASE_HEADERS)
         if self.cookie and host in (api_host, 'passport.bilibili.com', 'api.vc.bilibili.com'):
-            headers.update({'Cookie': self.cookie, 'Referer': 'https://message.bilibili.com/' if host == 'api.vc.bilibili.com' else 'https://www.bilibili.com/'})
+            headers.update({'Cookie': self.cookie,
+                            'Referer': 'https://message.bilibili.com/' if host == 'api.vc.bilibili.com'
+                            else 'https://www.bilibili.com/'})
+        if method == 'POST' and host == api_host:
+            headers['Origin'] = 'https://www.bilibili.com'
         response = await self.http.request(method, path, params=params, data=data, headers=headers)
         if response.status_code == 412:
             raise BiliError(412, '风控')
@@ -52,6 +86,19 @@ class BiliClient:
 
     async def nav(self):
         return (await self.request('GET', '/x/web-interface/nav'))['data']
+
+    async def identity(self):
+        """Cached login identity; level is None when the response omits it."""
+        if self._identity is None:
+            nav = await self.nav()
+            level_info = nav.get('level_info')
+            level = level_info.get('current_level') if isinstance(level_info, dict) else None
+            mobile = nav.get('mobile_verified')
+            self._identity = {'uid': int(nav.get('mid') or 0),
+                              'name': nav.get('uname') or '',
+                              'level': int(level) if isinstance(level, int) else None,
+                              'mobile_verified': None if mobile is None else bool(mobile)}
+        return dict(self._identity)
 
     async def _wbi_keys(self):
         if not self._keys:
@@ -95,12 +142,6 @@ class BiliClient:
         if offset_id is not None:
             params.update(id=offset_id, reply_time=reply_time)
         return (await self.request('GET', '/x/msgfeed/reply', params=params))['data']
-
-    async def at_notifications(self, *, offset_id=None, at_time=None):
-        params = {'platform': 'web', 'build': 0, 'mobi_app': 'web'}
-        if offset_id is not None:
-            params.update(id=offset_id, at_time=at_time)
-        return (await self.request('GET', '/x/msgfeed/at', params=params))['data']
 
     async def discover(self, keyword):
         keywords = [keyword] if isinstance(keyword, str) else keyword
@@ -165,32 +206,40 @@ class BiliClient:
         return await self.request('POST', '/x/v2/reply/add', data=data, auth=True)
 
     async def public_comment_visible(self, aid, rpid):
-        """Check anonymous public listings and the exact root; absence stays inconclusive."""
+        """Check the comment anonymously. True=public, False=not found, None=audit blocked."""
         if not rpid:
             return False
+
         async def public_get(path, params):
-            response = await self.public_http.get(path, params=params,
-                headers={'Cookie': '', 'User-Agent': 'Mozilla/5.0', 'Referer': 'https://www.bilibili.com/'})
+            response = await self.public_http.get(
+                path, params=params,
+                headers={**_BASE_HEADERS, 'Cookie': '', 'Referer': 'https://www.bilibili.com/'})
             if response.status_code == 412:
                 raise BiliError(412, '风控')
             response.raise_for_status()
             return response.json()
 
-        payload = await public_get('/x/v2/reply/main',
-                                   {'type': 1, 'oid': aid, 'mode': 2, 'next': 0, 'ps': 20})
-        if payload.get('code', 0) != 0:
-            raise BiliError(payload['code'], payload.get('message', ''))
-        replies = (payload.get('data') or {}).get('replies') or []
-        if any(str(reply.get('rpid')) == str(rpid) for reply in replies):
-            return True
+        # The exact root lookup is authoritative and avoids the hot/latest page.
         payload = await public_get('/x/v2/reply/reply',
                                    {'type': 1, 'oid': aid, 'root': rpid, 'pn': 1, 'ps': 20})
-        if payload.get('code') == 12006:
+        code = payload.get('code', 0)
+        if code == 0 and str(((payload.get('data') or {}).get('root') or {}).get('rpid')) == str(rpid):
+            return True
+        if code == 12006:
             return False
-        if payload.get('code', 0) != 0:
-            raise BiliError(payload['code'], payload.get('message', ''))
-        root = (payload.get('data') or {}).get('root') or {}
-        return str(root.get('rpid')) == str(rpid)
+        if code == -352:
+            return None
+        if code != 0:
+            raise BiliError(code, payload.get('message', ''))
+        payload = await public_get('/x/v2/reply/main',
+                                   {'type': 1, 'oid': aid, 'mode': 2, 'next': 0, 'ps': 20})
+        code = payload.get('code', 0)
+        if code in (-352, 12006):
+            return None if code == -352 else False
+        if code != 0:
+            raise BiliError(code, payload.get('message', ''))
+        replies = (payload.get('data') or {}).get('replies') or []
+        return any(str(reply.get('rpid')) == str(rpid) for reply in replies)
 
     async def replies(self, aid, rpid):
         data = (await self.request('GET', '/x/v2/reply/reply', params={'type': 1, 'oid': aid, 'root': rpid, 'pn': 1, 'ps': 20}))['data']

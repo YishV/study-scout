@@ -1,22 +1,58 @@
 # B 站接口记录
 
-设计依据是 [DESIGN.md](DESIGN.md) 第 7、10、16 节。以下 Web 接口可能变化；自动化测试只使用 fake 服务，线上验收必须使用专用小号。
+以下 Web 接口用于本项目；接口可能变化，自动化测试只使用 fake 服务，线上验证必须使用专用小号。
 
-| 操作 | 路径 | 必要参数 |
+## 使用的接口
+
+| 操作 | 路径 | 关键参数 |
 |---|---|---|
 | 扫码 | `/x/passport-login/web/qrcode/generate`、`/poll` | `qrcode_key` |
-| 登录状态/WBI 密钥 | `/x/web-interface/nav` | Cookie |
+| 登录状态 / WBI 密钥 | `/x/web-interface/nav` | Cookie |
+| 设备标识 | `/x/frontend/finger/spi` | 无；返回 `b_3`、`b_4` |
 | 按兴趣搜索 | `/x/web-interface/wbi/search/type` | 兴趣词、WBI 签名 |
-| 详情/字幕 | `/x/web-interface/view`、`/x/player/wbi/v2` | bvid / aid、cid |
-| 点赞/收藏 | `/x/web-interface/archive/like`、`/x/v3/fav/resource/deal` | aid、收藏夹 ID、csrf |
-| 评论/回复 | `/x/v2/reply/add`、`/x/v2/reply/reply` | oid、message、root、parent、csrf |
-| 私信分享 | `https://api.vc.bilibili.com/web_im/v1/web_im/send_msg` | 发件 UID、目标 UID、文本内容、设备 ID、WBI 签名、登录 Cookie、表单 `csrf=bili_jct` 与 `csrf_token=bili_jct` |
-| 读取目标私信 | `https://api.vc.bilibili.com/svr_sync/v1/svr_sync/fetch_session_msgs` | 目标 UID、会话类型 1、WBI 签名、登录 Cookie |
-| 读取回复通知 | `/x/msgfeed/reply` | 游标 ID、回复时间、登录 Cookie |
-| 读取 @ 通知 | `/x/msgfeed/at` | 游标 ID、@ 时间、登录 Cookie；仅处理配置的大号在视频评论中的 @ |
+| 视频详情 | `/x/web-interface/view` | `bvid` 或 `aid` |
+| 字幕 | `/x/player/wbi/v2` | `aid`、`cid`、WBI 签名 |
+| 点赞 | `/x/web-interface/archive/like` | `aid`、`like=1`、`csrf` |
+| 收藏 | `/x/v3/fav/resource/deal` | `rid=aid`、`type=2`、收藏夹 ID、`csrf` |
+| 评论 / 回复 | `/x/v2/reply/add` | `oid=aid`、`type=1`、`message`、`root`、`parent`、`csrf` |
+| 私信发送 | `https://api.vc.bilibili.com/web_im/v1/web_im/send_msg` | 发件/收件 UID、设备 ID、WBI 签名、`csrf` |
+| 读取私信 | `https://api.vc.bilibili.com/svr_sync/v1/svr_sync/fetch_session_msgs` | 会话 UID、`session_type=1`、WBI 签名 |
+| 回复与 @ 通知 | `/x/msgfeed/reply` | 游标 `id`、`reply_time` |
+| 评论公开回查 | `/x/v2/reply/reply`、`/x/v2/reply/main` | `oid`、`root` / `mode=2` |
 
-二维码登录成功后 Cookie 只保存在进程内存，每次启动重新扫码。评论 `@昵称` 是否发出真实通知不能靠文本推断：先检查评论响应中的 `data.reply.content.members` 是否包含目标 UID，再由目标账号人工确认通知。此验证未完成时真实互动锁定。私信请求格式参考 B 站网页客户端自身脚本；接口返回成功也需要由收件账号检查实际送达。
+写请求使用浏览器 User-Agent，并带上 `buvid3`、`buvid4` 和 `Origin`，降低被识别为脚本的概率；这不改变 B 站的风控判定。
 
-## 线上验证经验
+## 通知
 
-已有实例中，评论接口 `content.members` 含目标 UID，目标账号起初没有看到站内“回复与@”通知；后来用户确认通知送达，才解锁真实写入。随后一条评论虽返回成功和 RPID，却只在发件账号下可见，未登录查询返回 `12006`。因此需要分别区分请求成功、@ 通知送达、评论公开可见。专用小号到目标大号的测试私信随后已由用户确认送达。监听消息读取接口仅通过离线 fake 验证，线上字段如有变化会停止或跳过处理。
+B 站当前把「回复我的」和「@我的」合并到 `/x/msgfeed/reply`：
+
+- `item.business_id`：`1` 为视频评论，`11` 为动态。
+- `item.root_id`：根评论 RPID。
+- `item.source_id`：直接回复或 @ 所在的评论 RPID。
+- `item.at_details`：被 @ 的用户列表。
+
+因此 @ 通知不需要轮询 `/x/msgfeed/at`；该接口对新账号经常返回空列表。程序只在 `at_details` 包含小号 UID、且发送者是配置的大号时公开回复。
+
+## 评论可见性
+
+评论接口成功只代表请求被接受。匿名回查：
+
+- `/x/v2/reply/reply?root=<rpid>` 返回 `code=0` 且根评论 RPID 匹配：公开可见。
+- 返回 `12006`：匿名接口看不到，可能是审核、隐藏或删除。
+- 返回 `0` 但未带根评论：再查 `/x/v2/reply/main` 最新页兜底。
+- 返回 `-352`：风控拦截，本次无法判断。
+- `/x/v2/reply/main` 最新页仅作兜底；新版评论通常不在热门页。
+
+B 站对低等级、低信任账号有静默评论限制。程序在回查不到时暂停后续评论，并在页面和日志中提示。
+
+## 验收
+
+真实互动前至少确认：
+
+1. 扫码账号不是大号本身。
+2. `verify-mention` 返回的 `content.members` 包含大号 UID。
+3. 大号确实收到站内 @ 通知。
+4. 未登录窗口能看到评论；看不到时不要继续批量发表。
+5. `verify-private-message` 的测试私信在大号侧实际收到。
+
+Cookie 只保存在进程内存，不写入 `.env` 或数据库。

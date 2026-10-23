@@ -216,6 +216,27 @@ async def test_fake_service_and_risk_control():
 
 
 @pytest.mark.asyncio
+async def test_identity_reads_level_and_mobile_binding_and_is_cached():
+    calls = []
+
+    async def nav():
+        calls.append(1)
+        return {'mid': 99, 'uname': '小号', 'level_info': {'current_level': 1},
+                'mobile_verified': False}
+
+    bili = BiliClient(None)
+    bili.nav = nav
+    assert await bili.identity() == {'uid': 99, 'name': '小号', 'level': 1,
+                                     'mobile_verified': False}
+    assert len(calls) == 1
+    await bili.identity()
+    assert len(calls) == 1
+    bili.set_cookie('SESSDATA=new')
+    await bili.identity()
+    assert len(calls) == 2
+
+
+@pytest.mark.asyncio
 async def test_runner_dry_run_never_writes(tmp_path):
     app, calls = make_fake_bili()
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='https://fake.test') as http:
@@ -284,7 +305,7 @@ async def test_metadata_only_fun_video_sends_honest_private_suggestion_without_p
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('public_comment_visible, expected', [(False, 'unconfirmed'), (True, 'visible')])
-async def test_public_comment_visibility_is_recorded_without_reposting_or_stopping(tmp_path, public_comment_visible, expected):
+async def test_public_comment_visibility_is_recorded_and_hidden_comment_blocks_more(tmp_path, public_comment_visible, expected):
     app, calls = make_fake_bili(public_comment_visible=public_comment_visible)
     store = Store(tmp_path / 'test.db')
     store.init()
@@ -299,10 +320,66 @@ async def test_public_comment_visibility_is_recorded_without_reposting_or_stoppi
         await runner.run_once(check_replies=False)
     assert store.recent_runs()[0]['status'] == 'done'
     assert len([path for path, _ in calls if path == 'x/v2/reply/add']) == 1
-    checks = [form for path, form in calls if path == 'x/v2/reply/main']
-    assert len(checks) == 1 and checks[0]['_has_cookie'] is False
+    checks = [form for path, form in calls if path in ('x/v2/reply/main', 'x/v2/reply/reply')]
+    assert checks and all(form['_has_cookie'] is False for form in checks)
     assert store.dashboard_data()['videos'][0]['comments'][0]['visibility_status'] == expected
-    assert ('公开可见未确认' if expected == 'unconfirmed' else '匿名公开接口已查到') in render_dashboard(store.dashboard_data())
+    page = render_dashboard(store.dashboard_data())
+    assert ('匿名公开接口未查到，疑似仅自己可见' if expected == 'unconfirmed' else '匿名公开接口已查到') in page
+    assert ('评论可见性提醒' in page) is (expected == 'unconfirmed')
+    assert bool(runner.comments_blocked) is (expected == 'unconfirmed')
+
+
+@pytest.mark.asyncio
+async def test_hidden_comment_blocks_later_comments_but_keeps_private_message(tmp_path):
+    comments, messages = [], []
+
+    class TwoVideos:
+        async def identity(self):
+            return {'uid': 99, 'name': '小号', 'level': 3, 'mobile_verified': True}
+
+        async def discover(self, _interests):
+            return [{'bvid': 'BVfirst'}, {'bvid': 'BVsecond'}]
+
+        async def detail(self, bvid):
+            index = 1 if bvid == 'BVfirst' else 2
+            return {'bvid': bvid, 'aid': index, 'cid': index + 10, 'title': bvid,
+                    'owner': {'name': '作者' + bvid}}
+
+        async def subtitles(self, _aid, _cid):
+            return '先复现，再定位。'
+
+        async def comment(self, aid, message, **_kwargs):
+            comments.append((aid, message))
+            return {'code': 0, 'data': {'reply': {'rpid': 300 + aid}}}
+
+        async def public_comment_visible(self, _aid, _rpid):
+            return False
+
+        async def send_private_message(self, _sender, _owner, _message):
+            messages.append(_message)
+
+        async def like(self, _aid):
+            raise AssertionError('不应点赞')
+
+        async def favorite(self, _aid, _folder):
+            raise AssertionError('不应收藏')
+
+    store = Store(tmp_path / 'test.db')
+    store.init()
+    settings = Settings(topics='Python', owner_uid=42, owner_name='示例用户', dry_run=False,
+                        require_notification_confirmation=False)
+    runner = Runner(settings, store, TwoVideos(),
+                    judge=lambda *_: asyncio.sleep(0, result={
+                        'worth_recommending': True, 'score': 80, 'reason': '有具体方法',
+                        'takeaways': ['先复现'], 'risk': '无', 'comment_draft': '方法很实用'}),
+                    sleep=lambda _: asyncio.sleep(0))
+    await runner.run_once(check_replies=False)
+    assert len(comments) == 1
+    assert runner.comments_blocked
+    assert len(messages) == 2
+    second = store.dashboard_data()['videos'][1]
+    assert second['actions']['comment'] == 'skipped'
+    assert '仅自己可见' in second['action_reasons']['comment']
 
 
 @pytest.mark.asyncio
@@ -311,7 +388,7 @@ async def test_public_comment_can_be_found_by_rpid_outside_latest_page():
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='https://fake.test') as http:
         assert await BiliClient(http).public_comment_visible(1, 201)
     assert [path for path, _ in calls if path in ('x/v2/reply/main', 'x/v2/reply/reply')] == [
-        'x/v2/reply/main', 'x/v2/reply/reply']
+        'x/v2/reply/reply']
 
 
 @pytest.mark.asyncio
@@ -321,6 +398,13 @@ async def test_public_comment_audit_obeys_509_circuit_breaker():
         with pytest.raises(BiliError) as error:
             await BiliClient(http).public_comment_visible(1, 201)
     assert error.value.stop_run
+
+
+@pytest.mark.asyncio
+async def test_public_comment_audit_returns_none_when_risk_blocked():
+    app, _ = make_fake_bili(public_fail_code=-352)
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='https://fake.test') as http:
+        assert await BiliClient(http).public_comment_visible(1, 201) is None
 
 
 @pytest.mark.asyncio

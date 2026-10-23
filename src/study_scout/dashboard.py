@@ -100,8 +100,8 @@ def _video_card(video):
     comments = ''
     for comment in video['comments']:
         visibility = {'visible': '匿名公开接口已查到',
-                      'unconfirmed': '公开可见未确认（匿名查询未查到）',
-                      'unchecked': '公开可见未核验'}.get(comment.get('visibility_status'), '公开可见未核验')
+                      'unconfirmed': '匿名公开接口未查到，疑似仅自己可见',
+                      'unchecked': '未做公开回查'}.get(comment.get('visibility_status'), '未做公开回查')
         notification = '@ 通知已确认' if comment['notification_confirmed'] else '@ 通知未验收'
         note = (f'评论接口已接受；{visibility}；{notification}' if comment['status'] == 'ok'
                 else '评论状态：' + str(comment['status']))
@@ -125,6 +125,14 @@ def render_dashboard(data, controller=None):
     stat_html = ''.join(f'<div class="stat"><span>{label}</span><strong>{_safe(value)}</strong></div>'
                         for label, value in stats)
     selected = data['selected_run']
+    hidden = sum(1 for video in data['videos'] for comment in video['comments']
+                 if comment.get('visibility_status') == 'unconfirmed')
+    warning = ''
+    if hidden:
+        warning = (f'<section class="panel" style="margin-bottom:20px;border-color:#f0c2b8;background:#fff8f6">'
+                   f'<strong>评论可见性提醒</strong>'
+                   f'<p class="muted">有 {hidden} 条评论未在匿名接口查到，可能仅自己可见或仍在审核。'
+                   f'B 站会静默限制低等级、低信任账号的评论；请先在未登录窗口确认，再决定是否继续自动评论。</p></section>')
     run_links = ''.join(
         f'<a class="run {"active" if selected and selected["id"] == run["id"] else ""}" href="/?page={data["page"]}&amp;run={run["id"]}">'
         f'<span class="run-top"><span>第 {run["id"]} 轮</span><span>{_safe(_RUN_STATUS.get(run["status"], run["status"]))}</span></span>'
@@ -160,9 +168,9 @@ def render_dashboard(data, controller=None):
     return (f'<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">'
             f'<title>Study Scout · 运行记录</title><style>{_STYLE}</style></head><body><main class="wrap">'
             f'<header><div><h1>Study Scout</h1><p class="sub">{subtitle}</p></div><a class="refresh" href="/">刷新数据</a></header>'
-            f'{controls}<section class="stats">{stat_html}</section><div class="grid"><aside class="panel"><h2>运行记录</h2><div class="runs">{run_links}</div>'
+            f'{controls}{warning}<section class="stats">{stat_html}</section><div class="grid"><aside class="panel"><h2>运行记录</h2><div class="runs">{run_links}</div>'
             f'<div class="paging">{previous}{following}</div></aside><section class="panel"><h2>{heading}</h2><p class="sub">{run_note}</p>{video_html}'
-            f'<p class="note">“接口已接受”仅表示 B 站返回成功；匿名回查检查最新页和评论 RPID，未查到仍不等于确认被隐藏。@ 通知和私信送达需在目标账号核对。刷新页面只读取本地数据库。</p>'
+            f'<p class="note">“接口已接受”仅表示 B 站返回成功；评论是否公开以匿名回查和未登录页面为准。@ 通知和私信送达需在目标账号核对。刷新页面只读取本地数据库。</p>'
             f'</section></div></main></body></html>')
 
 
