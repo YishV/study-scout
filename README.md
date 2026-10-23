@@ -58,14 +58,14 @@ Cookie 不写入配置文件：每次启动重新扫码，只保存在当前进�
 ```
 
 1. 终端显示二维码和临时登录链接，用专用小号扫码。
-2. 登录后立即筛选一轮，之后每 `BILI_RUN_INTERVAL_MINUTES` 分钟一轮。
+2. 登录后先开始监听消息；首轮视频筛选在 `BILI_RUN_INTERVAL_MINUTES` 分钟后执行，之后每 `BILI_RUN_INTERVAL_MINUTES` 分钟一轮。
 3. 轮次之间按 `BILI_LISTEN_INTERVAL_SECONDS` 检查私信和通知。
 4. 网页地址：<http://127.0.0.1:8765/>。
 5. 按 `Ctrl+C` 停止整个服务。
 
 程序启动时只记录当前消息位置；启动前已经收到的私信、回复和 @ 不会补回复，需要时在大号侧重新发一次。
 
-只运行一轮：
+只运行一轮（立即执行，不等待间隔）：
 
 ```powershell
 .\scripts\start.ps1 run

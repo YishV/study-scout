@@ -157,18 +157,16 @@ class StudyService:
         self.controller.bind_loop()
         listen_enabled = self.listener is not None and self.settings.owner_uid > 0
         if listen_enabled:
-            await self._poll_messages()  # Establish the baseline before the first video round.
-        if self.controller.stopping:
-            return
-        await self._run_video()
+            await self._poll_messages()  # Process pending messages; video rounds wait for the interval.
         if self.controller.stopping:
             return
         interval = self.settings.run_interval_minutes * 60
         next_video = self.clock() + interval
         next_listener = self.clock() + self.settings.listen_interval_seconds if listen_enabled else None
         self.controller.next_run_in(interval)
-        log.info('服务进入常驻：视频每 %s 分钟一轮，消息每 %s 秒检查',
-                 self.settings.run_interval_minutes, self.settings.listen_interval_seconds)
+        log.info('服务进入常驻：首次视频筛选在 %s 分钟后；之后每 %s 分钟一轮，消息每 %s 秒检查',
+                 self.settings.run_interval_minutes, self.settings.run_interval_minutes,
+                 self.settings.listen_interval_seconds)
         while not self.controller.stopping:
             now = self.clock()
             if self.controller.take_pending() or now >= next_video:

@@ -49,7 +49,7 @@ class FakeRunner:
 
 
 @pytest.mark.asyncio
-async def test_service_runs_immediately_and_again_after_configured_interval(tmp_path):
+async def test_service_waits_for_configured_interval_before_each_round(tmp_path):
     store = Store(tmp_path / 'test.db')
     store.init()
     settings = Settings(owner_uid=0, dry_run=True, run_interval_minutes=10)
@@ -60,8 +60,8 @@ async def test_service_runs_immediately_and_again_after_configured_interval(tmp_
                            clock=clock, wait=clock.wait, output=lambda _: None)
     await service.run_forever()
     assert runner.calls == [False, False]
-    assert clock.waits == [600]
-    assert len(store.recent_runs()) == 2
+    assert clock.waits == [600, 600]
+    assert clock.value == 1200
 
 
 @pytest.mark.asyncio
@@ -85,10 +85,10 @@ async def test_manual_run_starts_early_and_resets_timer(tmp_path):
     service = StudyService(settings, store, runner, None, controller,
                            clock=clock, wait=request_after_30_seconds, output=lambda _: None)
     await service.run_forever()
-    assert runner.calls == [False, False]
+    assert runner.calls == [False]
     assert clock.value == 30
     assert waits == [600, 600]
-    assert controller.snapshot()['last_run_id'] == 2
+    assert controller.snapshot()['last_run_id'] == 1
 
 
 @pytest.mark.asyncio
@@ -103,7 +103,7 @@ async def test_circuit_open_stops_scheduler_without_retry(tmp_path):
                            clock=clock, wait=clock.wait, output=lambda _: None)
     await service.run_forever()
     assert runner.calls == [False]
-    assert clock.waits == []
+    assert clock.waits == [600]
     assert controller.snapshot()['state'] == 'stopped'
 
 
