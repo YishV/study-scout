@@ -19,8 +19,9 @@ class BiliError(Exception):
 
 
 class BiliClient:
-    def __init__(self, http: httpx.AsyncClient, cookie: str = ''):
+    def __init__(self, http: httpx.AsyncClient, cookie: str = '', *, public_http: httpx.AsyncClient | None = None):
         self.http = http
+        self.public_http = public_http or http
         self.cookie = cookie
         self._keys = None
         self._dm_device_id = str(uuid.uuid4()).upper()
@@ -162,6 +163,34 @@ class BiliClient:
         if root is not None:
             data.update(root=root, parent=parent)
         return await self.request('POST', '/x/v2/reply/add', data=data, auth=True)
+
+    async def public_comment_visible(self, aid, rpid):
+        """Check anonymous public listings and the exact root; absence stays inconclusive."""
+        if not rpid:
+            return False
+        async def public_get(path, params):
+            response = await self.public_http.get(path, params=params,
+                headers={'Cookie': '', 'User-Agent': 'Mozilla/5.0', 'Referer': 'https://www.bilibili.com/'})
+            if response.status_code == 412:
+                raise BiliError(412, '风控')
+            response.raise_for_status()
+            return response.json()
+
+        payload = await public_get('/x/v2/reply/main',
+                                   {'type': 1, 'oid': aid, 'mode': 2, 'next': 0, 'ps': 20})
+        if payload.get('code', 0) != 0:
+            raise BiliError(payload['code'], payload.get('message', ''))
+        replies = (payload.get('data') or {}).get('replies') or []
+        if any(str(reply.get('rpid')) == str(rpid) for reply in replies):
+            return True
+        payload = await public_get('/x/v2/reply/reply',
+                                   {'type': 1, 'oid': aid, 'root': rpid, 'pn': 1, 'ps': 20})
+        if payload.get('code') == 12006:
+            return False
+        if payload.get('code', 0) != 0:
+            raise BiliError(payload['code'], payload.get('message', ''))
+        root = (payload.get('data') or {}).get('root') or {}
+        return str(root.get('rpid')) == str(rpid)
 
     async def replies(self, aid, rpid):
         data = (await self.request('GET', '/x/v2/reply/reply', params={'type': 1, 'oid': aid, 'root': rpid, 'pn': 1, 'ps': 20}))['data']

@@ -83,6 +83,21 @@ def test_existing_database_gets_run_mode_column_without_losing_history(tmp_path)
     assert store.recent_runs()[0]['dry_run'] is None
 
 
+def test_existing_database_gets_comment_visibility_columns_without_losing_history(tmp_path):
+    store = Store(tmp_path / 'test.db')
+    store.init()
+    run_id = store.start_run()
+    candidate = store.add_candidate(run_id, {'bvid': 'BVold', 'aid': 1, 'title': '旧评论'})
+    store.save_comment(candidate, 321, '原评论', 42, False, 'ok')
+    with store.connect() as db:
+        db.execute('ALTER TABLE comments DROP COLUMN visibility_status')
+        db.execute('ALTER TABLE comments DROP COLUMN visibility_checked_at')
+    store.init()
+    comment = store.dashboard_data()['videos'][0]['comments'][0]
+    assert comment['rpid'] == 321
+    assert comment['visibility_status'] == 'unchecked'
+
+
 def test_dashboard_http_is_local_read_only_and_does_not_expose_secrets(tmp_path):
     store = Store(tmp_path / 'test.db')
     store.init()

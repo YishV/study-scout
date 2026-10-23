@@ -163,6 +163,24 @@ async def test_model_judgment_uses_persona_and_requests_comment_draft():
     assert result.comment_draft == '这个最小复现步骤挺实用。'
     assert '严谨但友好' in json.dumps(requests[0], ensure_ascii=False)
     assert '评论草稿' in json.dumps(requests[0], ensure_ascii=False)
+    assert '好笑' in json.dumps(requests[0], ensure_ascii=False)
+
+
+@pytest.mark.asyncio
+async def test_metadata_only_model_judgment_does_not_require_public_comment_draft():
+    requests = []
+
+    def respond(request):
+        requests.append(json.loads(request.content))
+        content = json.dumps({'worth_recommending': True, 'score': 82,
+                              'reason': '标题可能有趣', 'takeaways': ['可能有反转'], 'risk': '无字幕'})
+        return httpx.Response(200, json={'choices': [{'message': {'content': content}}]})
+
+    settings = Settings(model_base_url='https://model.test', model_api_key='fake', model_name='fake')
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as http:
+        result = await judge_with_model(http, settings, {'title': '搞笑反转'}, '')
+    assert result.recommended
+    assert requests[0]['messages'][1]['content'].find('"transcript_available": false') >= 0
 
 
 @pytest.mark.asyncio
@@ -228,16 +246,81 @@ async def test_repeated_dry_run_does_not_redraft_same_video(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_missing_subtitle_skips_judgment_and_actions(tmp_path):
+async def test_missing_subtitle_is_judged_but_without_owner_cannot_share(tmp_path):
     app, calls = make_fake_bili(subtitles=False)
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='https://fake.test') as http:
         store = Store(tmp_path / 'test.db')
         store.init()
-        runner = Runner(Settings(), store, BiliClient(http), judge=lambda *a: pytest.fail('judge should not run'))
+        runner = Runner(Settings(), store, BiliClient(http), judge=lambda *a: asyncio.sleep(0, result={
+            'worth_recommending': True, 'score': 80, 'reason': '标题可能有趣',
+            'takeaways': ['可能有趣'], 'risk': '未核对画面'}))
         await runner.run_once()
         assert store.recent_runs()[0]['selected_count'] == 0
-        assert store.dashboard_data()['videos'][0]['skip_reason'] == 'no_subtitles'
+        assert store.dashboard_data()['videos'][0]['skip_reason'] == 'metadata_no_owner'
         assert not any(p == 'x/v2/reply/add' for p, _ in calls)
+
+
+@pytest.mark.asyncio
+async def test_metadata_only_fun_video_sends_honest_private_suggestion_without_public_actions(tmp_path):
+    app, calls = make_fake_bili(subtitles=False)
+    store = Store(tmp_path / 'test.db')
+    store.init()
+    settings = Settings(topics='搞笑', owner_uid=42, owner_name='示例用户', dry_run=False,
+                        require_notification_confirmation=False, share_method='both')
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='https://fake.test') as http:
+        runner = Runner(settings, store, BiliClient(http, 'SESSDATA=x; bili_jct=csrf; DedeUserID=99'),
+                        judge=lambda *_: asyncio.sleep(0, result={
+                            'worth_recommending': True, 'score': 84, 'reason': '标题显示有趣的反转',
+                            'takeaways': ['可能有反转'], 'risk': '未核对画面',
+                            'like_recommended': True, 'favorite_recommended': True}),
+                        sleep=lambda _: asyncio.sleep(0))
+        await runner.run_once(check_replies=False)
+    writes = [path for path, _ in calls if path in ('x/v2/reply/add', 'x/web-interface/archive/like',
+              'x/v3/fav/resource/deal', 'web_im/v1/web_im/send_msg')]
+    assert writes == ['web_im/v1/web_im/send_msg']
+    assert '可能有趣' in next(form['msg[content]'] for path, form in calls if path.endswith('send_msg'))
+    assert store.dashboard_data()['videos'][0]['score'] == 84
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('public_comment_visible, expected', [(False, 'unconfirmed'), (True, 'visible')])
+async def test_public_comment_visibility_is_recorded_without_reposting_or_stopping(tmp_path, public_comment_visible, expected):
+    app, calls = make_fake_bili(public_comment_visible=public_comment_visible)
+    store = Store(tmp_path / 'test.db')
+    store.init()
+    settings = Settings(topics='Python', owner_uid=42, owner_name='示例用户', dry_run=False,
+                        require_notification_confirmation=False, fav_folder_id=9)
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='https://fake.test') as http:
+        runner = Runner(settings, store, BiliClient(http, 'SESSDATA=x; bili_jct=csrf; DedeUserID=99'),
+                        judge=lambda *_: asyncio.sleep(0, result={
+                            'worth_recommending': True, 'score': 80, 'reason': '有具体方法',
+                            'takeaways': ['先复现'], 'risk': '无', 'comment_draft': '方法很实用'}),
+                        sleep=lambda _: asyncio.sleep(0))
+        await runner.run_once(check_replies=False)
+    assert store.recent_runs()[0]['status'] == 'done'
+    assert len([path for path, _ in calls if path == 'x/v2/reply/add']) == 1
+    checks = [form for path, form in calls if path == 'x/v2/reply/main']
+    assert len(checks) == 1 and checks[0]['_has_cookie'] is False
+    assert store.dashboard_data()['videos'][0]['comments'][0]['visibility_status'] == expected
+    assert ('公开可见未确认' if expected == 'unconfirmed' else '匿名公开接口已查到') in render_dashboard(store.dashboard_data())
+
+
+@pytest.mark.asyncio
+async def test_public_comment_can_be_found_by_rpid_outside_latest_page():
+    app, calls = make_fake_bili(public_comment_in_latest=False)
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='https://fake.test') as http:
+        assert await BiliClient(http).public_comment_visible(1, 201)
+    assert [path for path, _ in calls if path in ('x/v2/reply/main', 'x/v2/reply/reply')] == [
+        'x/v2/reply/main', 'x/v2/reply/reply']
+
+
+@pytest.mark.asyncio
+async def test_public_comment_audit_obeys_509_circuit_breaker():
+    app, _ = make_fake_bili(public_fail_code=-509)
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='https://fake.test') as http:
+        with pytest.raises(BiliError) as error:
+            await BiliClient(http).public_comment_visible(1, 201)
+    assert error.value.stop_run
 
 
 @pytest.mark.asyncio

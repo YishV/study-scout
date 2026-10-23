@@ -30,7 +30,7 @@ class Settings:
     model_name: str = ''
     dry_run: bool = True
     require_notification_confirmation: bool = True
-    persona: str = '认真、简短、只谈视频中的具体做法，不装懂'
+    persona: str = '认真、简短、只谈有依据的视频看点，不装懂'
     share_method: str = 'private_message'
     like_min_score: int = 75
     favorite_min_score: int = 85
@@ -63,7 +63,7 @@ class Settings:
             model_name=get('MODEL_NAME', ''),
             dry_run=get('DRY_RUN', 'true').lower() != 'false',
             require_notification_confirmation=get('BILI_REQUIRE_NOTIFICATION_CONFIRMATION', 'true').lower() != 'false',
-            persona=get('STUDY_PERSONA', '认真、简短、只谈视频中的具体做法，不装懂'),
+            persona=get('STUDY_PERSONA', '认真、简短、只谈有依据的视频看点，不装懂'),
             share_method=get('BILI_SHARE_METHOD', 'private_message'),
             like_min_score=int(get('BILI_LIKE_MIN_SCORE', '75')),
             favorite_min_score=int(get('BILI_FAVORITE_MIN_SCORE', '85')),

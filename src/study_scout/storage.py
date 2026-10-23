@@ -26,7 +26,7 @@ class Store:
             CREATE TABLE IF NOT EXISTS candidates (id INTEGER PRIMARY KEY, run_id INTEGER REFERENCES runs(id), bvid TEXT, aid INTEGER, cid INTEGER, title TEXT, description TEXT, author TEXT, duration INTEGER, pubdate INTEGER, subtitle_available INTEGER DEFAULT 0, skip_reason TEXT, seen_at TEXT, UNIQUE(run_id,bvid));
             CREATE TABLE IF NOT EXISTS judgments (id INTEGER PRIMARY KEY, candidate_id INTEGER REFERENCES candidates(id), worth_learning INTEGER, score INTEGER, reason TEXT, takeaways_json TEXT, risk TEXT, model TEXT, raw_json TEXT, created_at TEXT);
             CREATE TABLE IF NOT EXISTS actions (id INTEGER PRIMARY KEY, candidate_id INTEGER REFERENCES candidates(id), kind TEXT, status TEXT, request_json TEXT, response_json TEXT, error_code TEXT, created_at TEXT, UNIQUE(candidate_id,kind));
-            CREATE TABLE IF NOT EXISTS comments (id INTEGER PRIMARY KEY, candidate_id INTEGER REFERENCES candidates(id), rpid INTEGER, message TEXT, mention_uid INTEGER, mention_verified INTEGER DEFAULT 0, notification_confirmed INTEGER DEFAULT 0, status TEXT, created_at TEXT);
+            CREATE TABLE IF NOT EXISTS comments (id INTEGER PRIMARY KEY, candidate_id INTEGER REFERENCES candidates(id), rpid INTEGER, message TEXT, mention_uid INTEGER, mention_verified INTEGER DEFAULT 0, notification_confirmed INTEGER DEFAULT 0, status TEXT, visibility_status TEXT DEFAULT 'unchecked', visibility_checked_at TEXT, created_at TEXT);
             CREATE TABLE IF NOT EXISTS replies (id INTEGER PRIMARY KEY, comment_id INTEGER REFERENCES comments(id), parent_rpid INTEGER, reply_rpid INTEGER, message TEXT, status TEXT, created_at TEXT, UNIQUE(comment_id,parent_rpid));
             CREATE TABLE IF NOT EXISTS accounts (id INTEGER PRIMARY KEY, platform TEXT, uid INTEGER, nickname TEXT, credential_blob BLOB, updated_at TEXT);
             CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT);
@@ -40,6 +40,11 @@ class Store:
             run_columns = {row['name'] for row in db.execute('PRAGMA table_info(runs)')}
             if 'dry_run' not in run_columns:
                 db.execute('ALTER TABLE runs ADD COLUMN dry_run INTEGER')
+            comment_columns = {row['name'] for row in db.execute('PRAGMA table_info(comments)')}
+            if 'visibility_status' not in comment_columns:
+                db.execute("ALTER TABLE comments ADD COLUMN visibility_status TEXT DEFAULT 'unchecked'")
+            if 'visibility_checked_at' not in comment_columns:
+                db.execute('ALTER TABLE comments ADD COLUMN visibility_checked_at TEXT')
 
     def start_run(self, *, dry_run=None):
         with self.connect() as db:
@@ -66,7 +71,7 @@ class Store:
 
     def record_judgment(self, candidate_id, judgment, model):
         with self.connect() as db:
-            db.execute('INSERT INTO judgments(candidate_id,worth_learning,score,reason,takeaways_json,risk,model,raw_json,created_at) VALUES (?,?,?,?,?,?,?,?,?)', (candidate_id, int(judgment.worth_learning), judgment.score, judgment.reason, json.dumps(judgment.takeaways, ensure_ascii=False), judgment.risk, model, judgment.model_dump_json(), now()))
+            db.execute('INSERT INTO judgments(candidate_id,worth_learning,score,reason,takeaways_json,risk,model,raw_json,created_at) VALUES (?,?,?,?,?,?,?,?,?)', (candidate_id, int(judgment.recommended), judgment.score, judgment.reason, json.dumps(judgment.takeaways, ensure_ascii=False), judgment.risk, model, judgment.model_dump_json(), now()))
 
     def set_subtitle_available(self, candidate_id):
         with self.connect() as db:
@@ -92,6 +97,13 @@ class Store:
     def save_comment(self, candidate_id, rpid, message, uid, verified, status):
         with self.connect() as db:
             return db.execute('INSERT INTO comments(candidate_id,rpid,message,mention_uid,mention_verified,status,created_at) VALUES (?,?,?,?,?,?,?)', (candidate_id, rpid, message, uid, int(verified), status, now())).lastrowid
+
+    def set_comment_visibility(self, comment_id, status):
+        if status not in ('visible', 'unconfirmed'):
+            raise ValueError('无效的评论公开状态')
+        with self.connect() as db:
+            db.execute('UPDATE comments SET visibility_status=?,visibility_checked_at=? WHERE id=?',
+                       (status, now(), comment_id))
 
     def set_notification_confirmed(self, comment_id):
         with self.connect() as db:

@@ -13,7 +13,8 @@ _CHINA_TIME = timezone(timedelta(hours=8))
 _RUN_STATUS = {'running': '运行中', 'done': '已结束', 'failed': '失败',
                'circuit_open': '风控熔断', 'stopped': '已停止'}
 _SKIP_REASON = {'duplicate_title': '标题重复，跳过', 'duplicate_author': '作者重复，跳过',
-                'no_subtitles': '无字幕，跳过', 'judge_error': '模型判断失败',
+                'no_subtitles': '无字幕，跳过', 'metadata_no_owner': '无字幕且未配置私信目标',
+                'judge_error': '模型判断失败',
                 'not_selected': '未达到入选条件', 'invalid_comment': '评论草稿不合规'}
 _ACTION = {'like': '点赞', 'favorite': '收藏', 'comment': '评论',
            'private_message': '私信', 'draft': '草稿', 'mention_test': '@ 验证', 'judge': '模型判断'}
@@ -85,9 +86,11 @@ def _video_card(video):
                     for kind, status in video['actions'].items())
     judgment = ''
     if video['score'] is not None:
-        judgment = (f'<p><strong>学习分数 {_safe(video["score"])}</strong> · {_safe(video["reason"])}</p>'
-                    + (f'<p class="muted">学习点：{_safe("；".join(video["takeaways"]))}</p>'
+        judgment = (f'<p><strong>推荐分数 {_safe(video["score"])}</strong> · {_safe(video["reason"])}</p>'
+                    + (f'<p class="muted">看点：{_safe("；".join(video["takeaways"]))}</p>'
                        if video['takeaways'] else ''))
+        if not video['subtitle_available']:
+            judgment += '<p class="muted">无字幕：仅按标题和简介推测；入选后只私信建议。</p>'
         decision = video['decision']
         for kind, label in (('like', '点赞'), ('favorite', '收藏')):
             if f'{kind}_recommended' in decision:
@@ -96,9 +99,12 @@ def _video_card(video):
                 judgment += f'<p class="muted">{label}评估：{recommendation} · {_safe(reason)}</p>'
     comments = ''
     for comment in video['comments']:
-        note = ('@ 通知已确认' if comment['notification_confirmed'] else
-                '评论接口已接受；公开可见和通知送达未验收' if comment['status'] == 'ok' else
-                '评论状态：' + str(comment['status']))
+        visibility = {'visible': '匿名公开接口已查到',
+                      'unconfirmed': '公开可见未确认（匿名查询未查到）',
+                      'unchecked': '公开可见未核验'}.get(comment.get('visibility_status'), '公开可见未核验')
+        notification = '@ 通知已确认' if comment['notification_confirmed'] else '@ 通知未验收'
+        note = (f'评论接口已接受；{visibility}；{notification}' if comment['status'] == 'ok'
+                else '评论状态：' + str(comment['status']))
         replies = ''.join(f'<div class="message">自动回复：{_safe(reply["message"])} '
                           f'<span class="muted">({_safe(reply["status"])})</span></div>'
                           for reply in comment['replies'])
@@ -156,7 +162,7 @@ def render_dashboard(data, controller=None):
             f'<header><div><h1>Study Scout</h1><p class="sub">{subtitle}</p></div><a class="refresh" href="/">刷新数据</a></header>'
             f'{controls}<section class="stats">{stat_html}</section><div class="grid"><aside class="panel"><h2>运行记录</h2><div class="runs">{run_links}</div>'
             f'<div class="paging">{previous}{following}</div></aside><section class="panel"><h2>{heading}</h2><p class="sub">{run_note}</p>{video_html}'
-            f'<p class="note">“接口已接受”仅表示 B 站返回成功；评论公开可见、@ 通知和私信送达需在目标账号核对。刷新页面读取本地数据库，不会访问 B 站或触发互动。</p>'
+            f'<p class="note">“接口已接受”仅表示 B 站返回成功；匿名回查检查最新页和评论 RPID，未查到仍不等于确认被隐藏。@ 通知和私信送达需在目标账号核对。刷新页面只读取本地数据库。</p>'
             f'</section></div></main></body></html>')
 
 

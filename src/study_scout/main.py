@@ -102,8 +102,10 @@ async def _run_command(command, settings, store, *, bvid=None, comment_id=None, 
 
     async with AsyncExitStack() as stack:
         http = bili_http or await stack.enter_async_context(httpx.AsyncClient(base_url='https://api.bilibili.com', timeout=20))
+        public_http = (http if bili_http else await stack.enter_async_context(
+            httpx.AsyncClient(base_url='https://api.bilibili.com', timeout=20)))
         model = model_http or await stack.enter_async_context(httpx.AsyncClient(timeout=60))
-        bili = BiliClient(http)
+        bili = BiliClient(http, public_http=public_http)
         auth = QRLogin(http, bili)
         while True:
             url = await auth.generate()
