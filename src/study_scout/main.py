@@ -86,9 +86,9 @@ async def _run_command(command, settings, store, *, bvid=None, comment_id=None, 
         method = {'private_message': '私信', 'comment_mention': '评论区 @',
                   'both': '评论区 @ + 私信'}[settings.share_method]
         notification = ('已确认' if store.mention_ready(settings.owner_uid) else
-                        '未确认，真实互动锁定' if settings.require_notification_confirmation else
-                        '未验收，已选择直接互动')
-        output(f"运行模式：{'DRY_RUN' if settings.dry_run else '真实操作'}；分享方式：{method}；@ 通知：{notification}")
+                        '未确认，写入锁定' if settings.require_notification_confirmation else
+                        '未验收，已选择直接写入')
+        output(f"分享方式：{method}；@ 通知：{notification}")
         return 0
 
     if command in ('confirm-notification', 'notification-missing'):
@@ -97,9 +97,9 @@ async def _run_command(command, settings, store, *, bvid=None, comment_id=None, 
         changed = (store.set_notification_confirmed(comment_id) if command == 'confirm-notification'
                    else store.mark_notification_missing(comment_id))
         if not changed:
-            output('评论不存在或不处于待确认状态；真实互动保持锁定。')
+            output('评论不存在或不处于待确认状态；写入保持锁定。')
             return 1
-        output('通知已确认。' if command == 'confirm-notification' else '未收到通知，真实互动保持锁定。')
+        output('通知已确认。' if command == 'confirm-notification' else '未收到通知，写入保持锁定。')
         return 0
 
     if command not in ('serve', 'run', 'listen', 'verify-mention', 'verify-private-message', 'check-replies'):
@@ -110,7 +110,7 @@ async def _run_command(command, settings, store, *, bvid=None, comment_id=None, 
         raise ValueError('请先在 .env 配置大号 BILI_OWNER_UID')
     if (command in ('serve', 'run', 'listen', 'check-replies') and not settings.dry_run
             and settings.require_notification_confirmation and not store.mention_ready(settings.owner_uid)):
-        output('真实互动锁定：目标账号尚未确认收到 @ 通知；未开始扫码或运行。')
+        output('写入锁定：目标账号尚未确认收到 @ 通知；未开始扫码或运行。')
         return 1
     needs_model = (command in ('serve', 'run') and judge is None) or (command == 'listen' and not settings.dry_run)
     if needs_model and not all((settings.model_base_url, settings.model_name, settings.model_api_key)):
@@ -175,14 +175,14 @@ async def _run_command(command, settings, store, *, bvid=None, comment_id=None, 
             listener = (MessageListener(settings, store, bili, model_http=model,
                                         sleep=sleep, output=output, write_gate=write_gate)
                         if settings.owner_uid else None)
-            output('运行模式：' + ('DRY_RUN，只生成草稿。' if settings.dry_run else '真实互动。'))
+            output('只生成草稿，不执行写操作。' if settings.dry_run else '开始运行。')
             with dashboard_in_background(store, controller, output=output):
                 service = StudyService(settings, store, runner, listener, controller, output=output)
                 await service.run_forever()
             return 0 if controller.snapshot()['last_status'] in (None, 'done') else 1
         if command == 'listen':
             listener = MessageListener(settings, store, bili, model_http=model, sleep=sleep, output=output)
-            output('运行模式：' + ('DRY_RUN，只读取新消息。' if settings.dry_run else '真实自动回复。'))
+            output('只读取新消息，不发送。' if settings.dry_run else '开始监听并自动回复。')
             await listener.run_forever()
             return 0
         if command == 'verify-mention':
@@ -199,7 +199,7 @@ async def _run_command(command, settings, store, *, bvid=None, comment_id=None, 
             output(f'检查完成，自动回复 {sent} 条。')
             return 0
 
-        output('运行模式：' + ('DRY_RUN，只生成草稿。' if settings.dry_run else '真实操作。'))
+        output('开始运行。' if not settings.dry_run else '只生成草稿，不执行写操作。')
         run_id = await runner.run_once()
         run = store.recent_runs()[0]
         output(f"本轮 {run_id}：{run['status']}，候选 {run['candidates_count']}，入选 {run['selected_count']}，错误 {run['error_code'] or '无'}")
@@ -231,9 +231,11 @@ def main(argv=None):
             serve_dashboard(store)
             return 0
         settings = Settings.from_env()
-        log.info('运行配置：模式=%s，分享=%s，视频间隔=%s 分钟，消息间隔=%s 秒，每轮最多 %s 条',
-                 'DRY_RUN' if settings.dry_run else '真实互动', settings.share_method,
-                 settings.run_interval_minutes, settings.listen_interval_seconds, settings.batch_limit)
+        log.info('运行配置：分享=%s，视频间隔=%s 分钟，消息间隔=%s 秒，每轮最多 %s 条',
+                 settings.share_method, settings.run_interval_minutes,
+                 settings.listen_interval_seconds, settings.batch_limit)
+        if settings.dry_run:
+            log.warning('DRY_RUN=true：只生成草稿，不执行写操作。')
         comment_id = int(args.value) if args.command in ('confirm-notification', 'notification-missing') else None
         return asyncio.run(run_command(args.command, settings, store,
                                        bvid=args.value if args.command == 'verify-mention' else None,

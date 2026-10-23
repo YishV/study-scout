@@ -119,7 +119,7 @@ async def test_start_prints_qr_and_waits_for_login_before_one_round(tmp_path):
     assert store.recent_runs()[0]['status'] == 'done'
     assert len(store.recent_runs()) == 1
     assert any('扫码' in line for line in output)
-    assert any('DRY_RUN' in line for line in output)
+    assert any('只生成草稿' in line for line in output)
     assert any('评论草稿：先复现' in line for line in output)
     assert any('私信草稿：' in line and 'BV1test' in line for line in output)
     assert not any(path in ('x/web-interface/archive/like', 'x/v3/fav/resource/deal', 'x/v2/reply/add') for path in paths)

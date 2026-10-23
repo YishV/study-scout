@@ -141,7 +141,13 @@ class BiliClient:
         params = {'platform': 'web', 'build': 0, 'mobi_app': 'web'}
         if offset_id is not None:
             params.update(id=offset_id, reply_time=reply_time)
-        return (await self.request('GET', '/x/msgfeed/reply', params=params))['data']
+        return (await self.request('GET', '/x/msgfeed/reply', params=params))['data'] or {}
+
+    async def at_notifications(self, *, offset_id=None, at_time=None):
+        params = {'platform': 'web', 'build': 0, 'mobi_app': 'web'}
+        if offset_id is not None:
+            params.update(id=offset_id, at_time=at_time)
+        return (await self.request('GET', '/x/msgfeed/at', params=params))['data'] or {}
 
     async def discover(self, keyword):
         keywords = [keyword] if isinstance(keyword, str) else keyword

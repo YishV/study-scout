@@ -222,6 +222,7 @@ async def test_listen_command_scans_then_reads_messages_without_video_browsing(t
     paths = [path for path, _ in calls]
     assert paths.index('x/passport-login/web/qrcode/poll') < paths.index('svr_sync/v1/svr_sync/fetch_session_msgs')
     assert 'x/msgfeed/reply' in paths
+    assert 'x/msgfeed/at' in paths
     assert not any(path.endswith('search/type') or path == 'x/web-interface/view' for path in paths)
     assert any('按 Ctrl+C' in line for line in lines)
 
@@ -295,6 +296,53 @@ async def test_owner_video_link_without_subtitles_gets_honest_answer(tmp_path):
     writes = [form for path, form in calls if path.endswith('/send_msg')]
     assert len(writes) == 1
     assert '没拿到字幕' in json.loads(writes[0]['msg[content]'])['content']
+
+
+@pytest.mark.asyncio
+async def test_owner_at_in_at_feed_replies_to_top_level_comment(tmp_path):
+    fake, calls = make_fake_bili()
+    store, _ = ready_store(tmp_path)
+    fake.state.dm_messages.append(dm(10))
+    settings = Settings(owner_uid=42, dry_run=False, model_name='fake',
+                        model_base_url='https://model.test', model_api_key='fake')
+    async with (httpx.AsyncClient(transport=httpx.ASGITransport(app=fake), base_url='https://fake.test') as http,
+                httpx.AsyncClient(transport=httpx.MockTransport(
+                    lambda _: httpx.Response(200, json={'choices': [{'message': {'content': '先看字幕里的最小复现。'}}]}))) as model):
+        listener = MessageListener(settings, store, BiliClient(http, 'SESSDATA=x; bili_jct=csrf'),
+                                   model_http=model, sleep=lambda _: asyncio.sleep(0))
+        assert await listener.poll_once() == 0
+        fake.state.at_notifications.append(at_notice(11))
+        assert await listener.poll_once() == 1
+        assert await listener.poll_once() == 0
+    writes = [form for path, form in calls if path == 'x/v2/reply/add']
+    assert len(writes) == 1
+    assert writes[0]['oid'] == '1'
+    assert writes[0]['root'] == writes[0]['parent'] == '211'
+    assert store.get_setting('listener_at_cursor_99') == '11'
+
+
+@pytest.mark.asyncio
+async def test_same_mention_in_both_feeds_replies_once(tmp_path):
+    fake, calls = make_fake_bili()
+    store, _ = ready_store(tmp_path)
+    fake.state.dm_messages.append(dm(10))
+    settings = Settings(owner_uid=42, dry_run=False, model_name='fake',
+                        model_base_url='https://model.test', model_api_key='fake')
+    duplicated = {'id': 12, 'reply_time': 12, 'user': {'mid': 42},
+                  'item': {'business_id': 1, 'subject_id': 1, 'root_id': 0,
+                           'source_id': 211, 'source_content': '@小号 总结一下',
+                           'at_details': [{'mid': 99}]}}
+    async with (httpx.AsyncClient(transport=httpx.ASGITransport(app=fake), base_url='https://fake.test') as http,
+                httpx.AsyncClient(transport=httpx.MockTransport(
+                    lambda _: httpx.Response(200, json={'choices': [{'message': {'content': '先看字幕里的最小复现。'}}]}))) as model):
+        listener = MessageListener(settings, store, BiliClient(http, 'SESSDATA=x; bili_jct=csrf'),
+                                   model_http=model, sleep=lambda _: asyncio.sleep(0))
+        await listener.poll_once()
+        fake.state.at_notifications.append(at_notice(11))
+        fake.state.reply_notifications.append(duplicated)
+        assert await listener.poll_once() == 1
+    writes = [form for path, form in calls if path == 'x/v2/reply/add']
+    assert len(writes) == 1
 
 
 @pytest.mark.asyncio

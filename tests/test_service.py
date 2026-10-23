@@ -120,7 +120,7 @@ def test_web_run_button_requires_local_origin_and_csrf_and_rejects_duplicate(tmp
             connection.request('GET', '/')
             page = connection.getresponse().read().decode('utf-8')
             token = re.search(r'name="token" value="([^"]+)"', page).group(1)
-            assert '手动刷一轮' in page and 'DRY_RUN' in page
+            assert '手动刷一轮' in page and '只生成草稿' in page
 
             body = urlencode({'token': token})
             connection.request('POST', '/run-once', body=body,

@@ -132,7 +132,7 @@ def render_dashboard(data, controller=None):
         warning = (f'<section class="panel" style="margin-bottom:20px;border-color:#f0c2b8;background:#fff8f6">'
                    f'<strong>评论可见性提醒</strong>'
                    f'<p class="muted">有 {hidden} 条评论未在匿名接口查到，可能仅自己可见或仍在审核。'
-                   f'B 站会静默限制低等级、低信任账号的评论；请先在未登录窗口确认，再决定是否继续自动评论。</p></section>')
+                   f'B 站会静默限制低等级、低信任或触发风控的账号；请先在未登录窗口确认，再决定是否继续自动评论。</p></section>')
     run_links = ''.join(
         f'<a class="run {"active" if selected and selected["id"] == run["id"] else ""}" href="/?page={data["page"]}&amp;run={run["id"]}">'
         f'<span class="run-top"><span>第 {run["id"]} 轮</span><span>{_safe(_RUN_STATUS.get(run["status"], run["status"]))}</span></span>'
@@ -147,7 +147,7 @@ def render_dashboard(data, controller=None):
     controls = ''
     if controller is not None:
         state = controller.snapshot()
-        mode = 'DRY_RUN · 只生成草稿' if state['dry_run'] else '真实互动'
+        mode = '只生成草稿' if state['dry_run'] else ''
         activity = {'idle': '等待下一轮', 'running': '正在刷视频', 'listening': '正在检查消息',
                     'stopped': '已停止'}.get(state['state'], state['state'])
         if state['pending']:
@@ -157,8 +157,9 @@ def render_dashboard(data, controller=None):
         last_run = (f'上轮 #{_safe(state["last_run_id"])}：{_safe(_RUN_STATUS.get(state["last_status"], state["last_status"]))}'
                     if state['last_run_id'] else '尚未开始')
         last_error = f' · 错误：{_safe(state["error"])}' if state['error'] else ''
+        mode_html = f'<strong>{_safe(mode)}</strong> · ' if mode else ''
         controls = (f'<section class="panel" style="margin-bottom:20px"><h2>运行控制</h2>'
-                    f'<p><strong>{_safe(mode)}</strong> · {_safe(activity)} · 自动间隔 {_safe(state["interval_minutes"])} 分钟'
+                    f'<p>{mode_html}{_safe(activity)} · 自动间隔 {_safe(state["interval_minutes"])} 分钟'
                     f' · 下次计划 {_safe(next_at)}</p><p class="muted">{last_run}{last_error}</p>'
                     f'<form action="/run-once" method="post"><input type="hidden" name="token" value="{_safe(controller.token)}">'
                     f'<button class="refresh" type="submit"{disabled}>手动刷一轮</button></form>'

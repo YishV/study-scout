@@ -90,7 +90,7 @@ class Runner:
             run_id = self.store.start_run(dry_run=self.settings.dry_run)
             status, error = 'done', None
             selected = considered = 0
-            log.info('第 %s 轮开始：%s', run_id, 'DRY_RUN' if self.settings.dry_run else '真实互动')
+            log.info('第 %s 轮开始%s', run_id, '（DRY_RUN，只生成草稿）' if self.settings.dry_run else '')
             try:
                 await self._check_account()
                 if (not self.settings.dry_run and self.settings.require_notification_confirmation
@@ -259,7 +259,8 @@ class Runner:
                                     self.store.set_comment_visibility(comment_id, 'unconfirmed')
                                     self.comments_blocked = '匿名回查未查到已发表评论，疑似仅自己可见'
                                     log.warning('评论公开回查 %s：匿名接口未查到，评论可能仅自己可见。'
-                                                '已暂停后续自动评论；请先确认小号等级、手机绑定或 B 站审核状态。', rpid)
+                                                '已暂停后续自动评论；请先在未登录窗口确认，'
+                                                '若持续不可见，账号可能被 B 站审核或风控限制，建议降频或更换账号。', rpid)
                                 else:
                                     log.warning('评论公开回查 %s：匿名接口暂时不可用，未能确认可见性', rpid)
                             except BiliError as exc:

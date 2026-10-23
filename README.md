@@ -46,7 +46,7 @@ Copy-Item .env.example .env
 
 - `BILI_SHARE_METHOD`：`private_message`（默认，只私信）、`comment_mention`（只评论 @）、`both`（评论 @ 并私信）。
 - `DRY_RUN`：默认 `true`，只生成草稿，不执行写操作。
-- `BILI_REQUIRE_NOTIFICATION_CONFIRMATION`：默认 `true`，需先确认大号收到测试评论的 @ 通知才允许真实互动。
+- `BILI_REQUIRE_NOTIFICATION_CONFIRMATION`：默认 `true`，需先确认大号收到测试评论的 @ 通知才允许真实写入。
 - `BILI_LISTENER_MAX_AGE_HOURS`：只处理最近多少小时内的回复和 @，默认 24。
 
 Cookie 不写入配置文件：每次启动重新扫码，只保存在当前进程内存。
@@ -96,17 +96,17 @@ Cookie 不写入配置文件：每次启动重新扫码，只保存在当前进�
 
 `verify-mention` 和 `verify-private-message` 会真实发送测试内容，即使 `DRY_RUN=true`。`verify-mention` 还会匿名回查这条测试评论；匿名接口看不到时命令返回非零，可直接判断小号是否被限制。单实例运行：同一时刻只允许一个扫码或运行进程。
 
-首次真实互动前建议先做通知验收：
+首次真实写入前建议先做通知验收：
 
 1. 执行 `verify-mention BVxxxxxxxxxx`，用大号确认站内 @ 通知。
 2. 用 `status` 查到评论 ID，执行 `confirm-notification <评论ID>`。
-3. 未收到通知时执行 `notification-missing <评论ID>`，保持真实互动锁定。
+3. 未收到通知时执行 `notification-missing <评论ID>`，保持写入锁定。
 
 `BILI_REQUIRE_NOTIFICATION_CONFIRMATION=false` 可以跳过验收，但不代表评论或私信能被对方看到。
 
 ## 评论可见性
 
-B 站会对低等级、低信任账号的评论做静默限制：接口返回成功和 RPID，但未登录用户看不到，常见于新注册小号。
+B 站会对低等级、低信任账号的评论做静默限制，账号行为触发风控时也会出现：接口返回成功和 RPID，但未登录用户看不到。
 
 程序的处理：
 

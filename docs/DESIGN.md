@@ -70,22 +70,24 @@ discover(interests)
 
 ```text
 私信: https://api.vc.bilibili.com/svr_sync/v1/svr_sync/fetch_session_msgs
-通知: /x/msgfeed/reply
+@ 通知: /x/msgfeed/at
+回复通知: /x/msgfeed/reply
 ```
 
-B 站当前把视频评论中的 @ 合并进 `/x/msgfeed/reply`，用 `item.at_details` 标出被 @ 的账号。程序不再轮询 `/x/msgfeed/at`；该接口对新账号常返回空列表。
+B 站的「@我的」列表走 `/x/msgfeed/at`，顶层评论里的 @ 会出现在这里；`/x/msgfeed/reply` 处理「回复我的」，回复正文里带的 @ 用 `item.at_details` 标出。程序两个来源都轮询，并用 `(subject_id, source_id)` 作为去重键，保证同一条 @ 只回复一次。
 
 处理规则：
 
 | 通知 | 条件 | 动作 |
 |---|---|---|
-| 大号 @ 小号 | `at_details` 含小号 UID，发送者是大号 | 在 `source_id` 下公开回复 |
+| 大号 @ 小号（at feed） | 发送者是大号，`business_id=1` | 在 `source_id` 下公开回复 |
+| 回复里 @ 小号（reply feed） | `at_details` 含小号 UID，发送者是大号 | 在 `source_id` 下公开回复 |
 | 小号评论下的新回复 | `root_id` 是小号评论，`source_id != root_id` | 在原评论下回复 |
 | 其他 | 非大号、非小号评论线程、超出时限 | 只推进游标 |
 
 去重与限额：
 
-- 通知游标 `listener_reply_cursor_<uid>` 持久化，重启不重复处理。
+- 通知游标 `listener_at_cursor_<uid>`、`listener_reply_cursor_<uid>` 持久化，重启不重复处理。
 - 首次启动只记录当前位置，不回复历史消息。
 - `BILI_LISTENER_MAX_AGE_HOURS` 之外的通知只推进游标，不生成回复。
 - 每条评论最多回复 `BILI_COMMENT_MAX_REPLIES` 次。
@@ -135,7 +137,7 @@ accounts          预留
 - 两次写操作之间随机等待 `BILI_WRITE_DELAY_MIN`～`BILI_WRITE_DELAY_MAX` 秒，视频轮次和消息回复共用同一个 `WriteGate`。
 - 写操作遇到 `412`、`-509`、验证码、频率限制、`-352` 等错误时立即停止本轮，不自动重试。
 - 单轮最多处理 5 条视频；每轮消息回复有上限；每次登录有总上限。
-- 真实互动前可要求大号确认收到测试评论的 @ 通知。
+- 真实写入前可要求大号确认收到测试评论的 @ 通知。
 - 评论未形成真实 @ 时停止本轮，不降级为伪 @。
 - 评论匿名回查确认不可见时，停止后续评论，但保留点赞、收藏和私信；回查接口本身失败时只记录，不停止。
 

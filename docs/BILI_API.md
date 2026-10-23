@@ -17,21 +17,22 @@
 | 评论 / 回复 | `/x/v2/reply/add` | `oid=aid`、`type=1`、`message`、`root`、`parent`、`csrf` |
 | 私信发送 | `https://api.vc.bilibili.com/web_im/v1/web_im/send_msg` | 发件/收件 UID、设备 ID、WBI 签名、`csrf` |
 | 读取私信 | `https://api.vc.bilibili.com/svr_sync/v1/svr_sync/fetch_session_msgs` | 会话 UID、`session_type=1`、WBI 签名 |
-| 回复与 @ 通知 | `/x/msgfeed/reply` | 游标 `id`、`reply_time` |
+| 回复通知 | `/x/msgfeed/reply` | 游标 `id`、`reply_time` |
+| @ 通知 | `/x/msgfeed/at` | 游标 `id`、`at_time` |
 | 评论公开回查 | `/x/v2/reply/reply`、`/x/v2/reply/main` | `oid`、`root` / `mode=2` |
 
 写请求使用浏览器 User-Agent，并带上 `buvid3`、`buvid4` 和 `Origin`，降低被识别为脚本的概率；这不改变 B 站的风控判定。
 
 ## 通知
 
-B 站当前把「回复我的」和「@我的」合并到 `/x/msgfeed/reply`：
+B 站消息中心使用两个来源：
 
-- `item.business_id`：`1` 为视频评论，`11` 为动态。
-- `item.root_id`：根评论 RPID。
-- `item.source_id`：直接回复或 @ 所在的评论 RPID。
-- `item.at_details`：被 @ 的用户列表。
+- `/x/msgfeed/at`：**顶层评论里的 @**，即「@我的」列表。
+- `/x/msgfeed/reply`：回复我的；回复正文里带的 @ 用 `item.at_details` 标出。
 
-因此 @ 通知不需要轮询 `/x/msgfeed/at`；该接口对新账号经常返回空列表。程序只在 `at_details` 包含小号 UID、且发送者是配置的大号时公开回复。
+两个接口的 `item` 字段一致：`business_id`（`1` 为视频评论，`11` 为动态）、`subject_id`（视频 aid）、`root_id`、`source_id`（@ 或回复所在的评论）、`source_content`、`at_details`。
+
+程序两个接口都轮询，并只用 `(subject_id, source_id)` 去重；只在发送者是配置的大号时公开回复。只轮询其中一个会漏掉顶层评论 @ 或回复里的 @。
 
 ## 评论可见性
 
@@ -47,7 +48,7 @@ B 站对低等级、低信任账号有静默评论限制。程序在回查不到
 
 ## 验收
 
-真实互动前至少确认：
+真实写入前至少确认：
 
 1. 扫码账号不是大号本身。
 2. `verify-mention` 返回的 `content.members` 包含大号 UID。
