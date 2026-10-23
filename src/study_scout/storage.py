@@ -238,16 +238,20 @@ class Store:
             }
             videos = []
             if selected_run:
-                rows = db.execute('''SELECT c.*,j.worth_learning,j.score,j.reason,j.takeaways_json
+                rows = db.execute('''SELECT c.*,j.worth_learning,j.score,j.reason,j.takeaways_json,j.raw_json
                     FROM candidates c LEFT JOIN judgments j ON j.candidate_id=c.id
                     WHERE c.run_id=? ORDER BY c.id''', (selected_run['id'],))
                 for row in rows:
                     video = dict(row)
                     video['takeaways'] = json.loads(video['takeaways_json'] or '[]')
+                    video['decision'] = json.loads(video['raw_json'] or '{}')
                     action_rows = db.execute(
-                        'SELECT kind,status,error_code FROM actions WHERE candidate_id=? ORDER BY id',
-                        (video['id'],))
+                        'SELECT kind,status,error_code,request_json FROM actions WHERE candidate_id=? ORDER BY id',
+                        (video['id'],)).fetchall()
                     video['actions'] = {action['kind']: action['status'] for action in action_rows}
+                    video['action_reasons'] = {
+                        action['kind']: json.loads(action['request_json'] or '{}').get('reason', '')
+                        for action in action_rows if action['status'] == 'skipped'}
                     video['action_errors'] = {action['kind']: action['error_code'] for action in db.execute(
                         'SELECT kind,error_code FROM actions WHERE candidate_id=? AND error_code IS NOT NULL',
                         (video['id'],))}

@@ -48,13 +48,16 @@ def _time(value):
         return _safe(value)
 
 
-def _action_badge(kind, status, error=None):
+def _action_badge(kind, status, error=None, reason=None):
     label = _ACTION.get(kind, kind)
     if kind == 'draft':
         return '<span class="badge draft">草稿，未发送</span>'
     if status == 'ok':
         suffix = '接口已接受' if kind in ('comment', 'private_message') else '成功'
         return f'<span class="badge good">{_safe(label)}{suffix}</span>'
+    if status == 'skipped':
+        detail = f'（{_safe(reason)}）' if reason else ''
+        return f'<span class="badge">{_safe(label)}跳过{detail}</span>'
     if status in ('failed', 'mention_unverified'):
         detail = f'（{_safe(error)}）' if error else ''
         return f'<span class="badge bad">{_safe(label)}失败{detail}</span>'
@@ -77,13 +80,20 @@ def _video_card(video):
         state, state_class = ('已入选' if video['worth_learning'] and video['score'] >= 70 else '未入选'), ''
     else:
         state, state_class = '待判断', ''
-    chips = ''.join(_action_badge(kind, status, video['action_errors'].get(kind))
+    chips = ''.join(_action_badge(kind, status, video['action_errors'].get(kind),
+                                  video['action_reasons'].get(kind))
                     for kind, status in video['actions'].items())
     judgment = ''
     if video['score'] is not None:
         judgment = (f'<p><strong>学习分数 {_safe(video["score"])}</strong> · {_safe(video["reason"])}</p>'
                     + (f'<p class="muted">学习点：{_safe("；".join(video["takeaways"]))}</p>'
                        if video['takeaways'] else ''))
+        decision = video['decision']
+        for kind, label in (('like', '点赞'), ('favorite', '收藏')):
+            if f'{kind}_recommended' in decision:
+                recommendation = '建议' if decision[f'{kind}_recommended'] else '不建议'
+                reason = decision.get(f'{kind}_reason') or '未给出理由'
+                judgment += f'<p class="muted">{label}评估：{recommendation} · {_safe(reason)}</p>'
     comments = ''
     for comment in video['comments']:
         note = ('@ 通知已确认' if comment['notification_confirmed'] else

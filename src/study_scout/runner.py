@@ -115,24 +115,42 @@ class Runner:
                     if not judgment.worth_learning or judgment.score < 70 or not judgment.takeaways:
                         self.store.record_skip(candidate_id, 'not_selected')
                         continue
+                    mention_owner = self.settings.share_method in ('comment_mention', 'both')
                     try:
+                        if mention_owner and not self.settings.owner_uid:
+                            raise ValueError('评论 @ 模式需要配置大号 UID')
                         message = build_comment(self.settings.owner_name, judgment.comment_draft or judgment.takeaways[0],
-                                                mention=self.settings.share_method == 'comment_mention')
+                                                mention=mention_owner)
                     except ValueError as exc:
                         log.warning('评论草稿不合规 %s: %s', bvid, exc)
                         self.store.record_skip(candidate_id, 'invalid_comment')
                         continue
                     selected += 1
+                    like_allowed = judgment.like_recommended and judgment.score >= self.settings.like_min_score
+                    favorite_allowed = (judgment.favorite_recommended
+                                        and judgment.score >= self.settings.favorite_min_score)
                     share_message = (f"推荐视频：{title[:80]}\n"
                                      f"https://www.bilibili.com/video/{bvid}\n"
                                      f"看点：{judgment.comment_draft or judgment.takeaways[0]}")
                     if self.settings.dry_run:
                         self.store.record_action(candidate_id, 'draft', 'dry_run',
                                                  {'message': message, 'share_method': self.settings.share_method,
-                                                  'share_message': share_message if self.settings.share_method == 'private_message' else ''})
+                                                  'share_message': share_message if self.settings.share_method in ('private_message', 'both') else '',
+                                                  'like_allowed': like_allowed, 'favorite_allowed': favorite_allowed})
                         continue
-                    kinds = ['like', 'favorite', 'comment']
-                    if self.settings.share_method == 'private_message':
+                    kinds = []
+                    for kind, allowed, recommended, minimum in (
+                            ('like', like_allowed, judgment.like_recommended, self.settings.like_min_score),
+                            ('favorite', favorite_allowed, judgment.favorite_recommended,
+                             self.settings.favorite_min_score)):
+                        if allowed:
+                            kinds.append(kind)
+                        else:
+                            reason = ('模型不建议' if not recommended else
+                                      f'学习分数 {judgment.score} 低于{"点赞" if kind == "like" else "收藏"}门槛 {minimum}')
+                            self.store.record_action(candidate_id, kind, 'skipped', {'reason': reason})
+                    kinds.append('comment')
+                    if self.settings.share_method in ('private_message', 'both'):
                         kinds.append('private_message')
                     for kind in kinds:
                         if self.stop_requested:
@@ -159,10 +177,9 @@ class Runner:
                                 await self.bili.favorite(detail['aid'], folder)
                             elif kind == 'comment':
                                 result = await self.bili.comment(detail['aid'], message)
-                                verified = (self.settings.share_method == 'comment_mention'
-                                            and verified_member(result, self.settings.owner_uid))
+                                verified = mention_owner and verified_member(result, self.settings.owner_uid)
                                 rpid = ((result.get('data') or {}).get('reply') or {}).get('rpid')
-                                mention_missing = self.settings.share_method == 'comment_mention' and not verified
+                                mention_missing = mention_owner and not verified
                                 self.store.save_comment(candidate_id, rpid, message, self.settings.owner_uid,
                                                         verified, 'mention_unverified' if mention_missing else 'ok')
                                 if mention_missing:

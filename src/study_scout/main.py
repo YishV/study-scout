@@ -60,7 +60,8 @@ async def _run_command(command, settings, store, *, bvid=None, comment_id=None, 
             output(f"本轮 {run['id']}：{run['status']}，候选 {run['candidates_count']}，入选 {run['selected_count']}，错误 {run['error_code'] or '无'}")
         for comment in store.pending_mentions():
             output(f"待确认通知：评论 ID {comment['id']}，RPID {comment['rpid']}，目标 UID {comment['mention_uid']}")
-        method = '私信' if settings.share_method == 'private_message' else '评论区 @'
+        method = {'private_message': '私信', 'comment_mention': '评论区 @',
+                  'both': '评论区 @ + 私信'}[settings.share_method]
         notification = ('已确认' if store.mention_ready(settings.owner_uid) else
                         '未确认，真实互动锁定' if settings.require_notification_confirmation else
                         '未验收，已选择直接互动')

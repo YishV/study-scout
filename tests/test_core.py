@@ -6,6 +6,7 @@ import pytest
 
 from fake_bili import make_fake_bili
 from study_scout.config import Settings
+from study_scout.dashboard import render_dashboard
 from study_scout.storage import Store
 from study_scout.bili.client import BiliClient, BiliError
 from study_scout.bili.auth import QRLogin
@@ -320,7 +321,7 @@ async def test_412_circuit_breaker_stops_before_next_action(tmp_path):
         comment = store.save_comment(candidate, 55, '@示例用户 test', 42, True, 'pending_confirmation')
         store.set_notification_confirmed(comment)
         settings = Settings(topics='Python', owner_uid=42, owner_name='示例用户', fav_folder_id=9, dry_run=False)
-        runner = Runner(settings, store, BiliClient(http, 'SESSDATA=x; bili_jct=csrf; DedeUserID=99'), judge=lambda *a: asyncio.sleep(0, result={'worth_learning': True, 'score': 80, 'reason': '具体', 'takeaways': ['先复现'], 'risk': '无'}), sleep=lambda _: asyncio.sleep(0))
+        runner = Runner(settings, store, BiliClient(http, 'SESSDATA=x; bili_jct=csrf; DedeUserID=99'), judge=lambda *a: asyncio.sleep(0, result={'worth_learning': True, 'score': 80, 'reason': '具体', 'takeaways': ['先复现'], 'risk': '无', 'like_recommended': True}), sleep=lambda _: asyncio.sleep(0))
         await runner.run_once()
         assert store.recent_runs()[0]['status'] == 'circuit_open'
         assert [p for p, _ in calls if p in ('x/web-interface/archive/like', 'x/v3/fav/resource/deal', 'x/v2/reply/add')] == ['x/web-interface/archive/like']
@@ -337,7 +338,7 @@ async def test_action_order_and_reply_limit_with_fake_service(tmp_path):
         comment = store.save_comment(candidate, 55, '@示例用户 test', 42, True, 'pending_confirmation')
         store.set_notification_confirmed(comment)
         settings = Settings(topics='Python', owner_uid=42, owner_name='示例用户', fav_folder_id=9, max_replies=1, dry_run=False)
-        runner = Runner(settings, store, BiliClient(http, 'SESSDATA=x; bili_jct=csrf; DedeUserID=99'), judge=lambda *a: asyncio.sleep(0, result={'worth_learning': True, 'score': 80, 'reason': '具体', 'takeaways': ['先复现'], 'risk': '无'}), reply=lambda *a: asyncio.sleep(0, result='谢谢，你可以先试试最小复现。'), sleep=lambda _: asyncio.sleep(0))
+        runner = Runner(settings, store, BiliClient(http, 'SESSDATA=x; bili_jct=csrf; DedeUserID=99'), judge=lambda *a: asyncio.sleep(0, result={'worth_learning': True, 'score': 90, 'reason': '具体', 'takeaways': ['先复现'], 'risk': '无', 'like_recommended': True, 'favorite_recommended': True}), reply=lambda *a: asyncio.sleep(0, result='谢谢，你可以先试试最小复现。'), sleep=lambda _: asyncio.sleep(0))
         await runner.run_once()
         writes = [p for p, _ in calls if p in ('x/web-interface/archive/like', 'x/v3/fav/resource/deal', 'x/v2/reply/add')]
         assert writes[:3] == ['x/web-interface/archive/like', 'x/v3/fav/resource/deal', 'x/v2/reply/add']
@@ -359,8 +360,9 @@ async def test_private_share_posts_persona_comment_then_sends_one_dm(tmp_path):
     store.set_notification_confirmed(comment)
     settings = Settings(topics='Python', owner_uid=42, owner_name='示例用户', fav_folder_id=9,
                         persona='认真', share_method='private_message', dry_run=False)
-    judgment = {'worth_learning': True, 'score': 80, 'reason': '具体方法好用',
-                'takeaways': ['先复现'], 'risk': '无', 'comment_draft': '这个最小复现步骤很实用。'}
+    judgment = {'worth_learning': True, 'score': 90, 'reason': '具体方法好用',
+                'takeaways': ['先复现'], 'risk': '无', 'comment_draft': '这个最小复现步骤很实用。',
+                'like_recommended': True, 'favorite_recommended': True}
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='https://fake.test') as http:
         runner = Runner(settings, store, BiliClient(http, 'SESSDATA=x; bili_jct=csrf; DedeUserID=99'),
                         judge=lambda *a: asyncio.sleep(0, result=judgment), sleep=lambda _: asyncio.sleep(0))
@@ -419,3 +421,108 @@ async def test_comment_mention_mode_never_sends_dm(tmp_path):
     assert comments == ['@示例用户 最小复现有帮助。']
     assert not any(path.endswith('/send_msg') for path, _ in calls)
     assert store.recent_runs()[0]['status'] == 'done'
+
+
+@pytest.mark.asyncio
+async def test_both_share_methods_mention_owner_and_send_dm(tmp_path):
+    app, calls = make_fake_bili()
+    store = Store(tmp_path / 'test.db')
+    store.init()
+    settings = Settings(topics='Python', owner_uid=42, owner_name='示例用户', fav_folder_id=9,
+                        share_method='both', dry_run=False, require_notification_confirmation=False)
+    judgment = {'worth_learning': True, 'score': 92, 'reason': '具体', 'takeaways': ['先复现'],
+                'risk': '无', 'comment_draft': '这个步骤有用。',
+                'like_recommended': True, 'like_reason': '讲解清楚',
+                'favorite_recommended': True, 'favorite_reason': '值得回看'}
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='https://fake.test') as http:
+        runner = Runner(settings, store, BiliClient(http, 'SESSDATA=x; bili_jct=csrf; DedeUserID=99'),
+                        judge=lambda *a: asyncio.sleep(0, result=judgment), sleep=lambda _: asyncio.sleep(0))
+        await runner.run_once(check_replies=False)
+    writes = [path for path, _ in calls if path in
+              ('x/web-interface/archive/like', 'x/v3/fav/resource/deal', 'x/v2/reply/add', 'web_im/v1/web_im/send_msg')]
+    assert writes == ['x/web-interface/archive/like', 'x/v3/fav/resource/deal',
+                      'x/v2/reply/add', 'web_im/v1/web_im/send_msg']
+    comment_form = next(form for path, form in calls if path == 'x/v2/reply/add')
+    assert comment_form['message'] == '@示例用户 这个步骤有用。'
+    assert store.recent_runs()[0]['status'] == 'done'
+
+
+@pytest.mark.asyncio
+async def test_like_and_favorite_have_independent_model_decisions_and_score_floors(tmp_path):
+    app, calls = make_fake_bili()
+    store = Store(tmp_path / 'test.db')
+    store.init()
+    settings = Settings(topics='Python', owner_uid=42, owner_name='示例用户', fav_folder_id=9,
+                        share_method='both', dry_run=False, require_notification_confirmation=False,
+                        like_min_score=75, favorite_min_score=85)
+    judgment = {'worth_learning': True, 'score': 80, 'reason': '具体', 'takeaways': ['先复现'],
+                'risk': '无', 'comment_draft': '步骤清楚。',
+                'like_recommended': True, 'like_reason': '有用',
+                'favorite_recommended': True, 'favorite_reason': '可以复习'}
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='https://fake.test') as http:
+        runner = Runner(settings, store, BiliClient(http, 'SESSDATA=x; bili_jct=csrf; DedeUserID=99'),
+                        judge=lambda *a: asyncio.sleep(0, result=judgment), sleep=lambda _: asyncio.sleep(0))
+        await runner.run_once(check_replies=False)
+    paths = [path for path, _ in calls]
+    assert 'x/web-interface/archive/like' in paths
+    assert 'x/v3/fav/resource/deal' not in paths
+    assert 'x/v2/reply/add' in paths and 'web_im/v1/web_im/send_msg' in paths
+    assert store.dashboard_data()['videos'][0]['actions']['favorite'] == 'skipped'
+    assert '低于收藏门槛 85' in render_dashboard(store.dashboard_data())
+
+
+@pytest.mark.asyncio
+async def test_missing_model_action_recommendations_never_like_or_favorite(tmp_path):
+    app, calls = make_fake_bili()
+    store = Store(tmp_path / 'test.db')
+    store.init()
+    settings = Settings(topics='Python', owner_uid=42, owner_name='示例用户', fav_folder_id=9,
+                        share_method='both', dry_run=False, require_notification_confirmation=False)
+    judgment = {'worth_learning': True, 'score': 95, 'reason': '具体', 'takeaways': ['先复现'],
+                'risk': '无', 'comment_draft': '步骤清楚。'}
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='https://fake.test') as http:
+        runner = Runner(settings, store, BiliClient(http, 'SESSDATA=x; bili_jct=csrf; DedeUserID=99'),
+                        judge=lambda *a: asyncio.sleep(0, result=judgment), sleep=lambda _: asyncio.sleep(0))
+        await runner.run_once(check_replies=False)
+    paths = [path for path, _ in calls]
+    assert 'x/web-interface/archive/like' not in paths
+    assert 'x/v3/fav/resource/deal' not in paths
+    assert 'x/v2/reply/add' in paths and 'web_im/v1/web_im/send_msg' in paths
+
+
+@pytest.mark.asyncio
+async def test_model_can_recommend_favorite_without_like(tmp_path):
+    app, calls = make_fake_bili()
+    store = Store(tmp_path / 'test.db')
+    store.init()
+    settings = Settings(topics='Python', owner_uid=42, owner_name='示例用户', fav_folder_id=9,
+                        share_method='both', dry_run=False, require_notification_confirmation=False)
+    judgment = {'worth_learning': True, 'score': 91, 'reason': '适合回看', 'takeaways': ['先复现'],
+                'risk': '无', 'comment_draft': '步骤清楚。',
+                'like_recommended': False, 'favorite_recommended': True,
+                'favorite_reason': '资料索引很完整'}
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='https://fake.test') as http:
+        runner = Runner(settings, store, BiliClient(http, 'SESSDATA=x; bili_jct=csrf; DedeUserID=99'),
+                        judge=lambda *a: asyncio.sleep(0, result=judgment), sleep=lambda _: asyncio.sleep(0))
+        await runner.run_once(check_replies=False)
+    paths = [path for path, _ in calls]
+    assert 'x/web-interface/archive/like' not in paths
+    assert 'x/v3/fav/resource/deal' in paths
+    assert store.dashboard_data()['videos'][0]['actions']['like'] == 'skipped'
+
+
+@pytest.mark.asyncio
+async def test_unrecognized_mention_stops_before_dm_in_both_mode(tmp_path):
+    app, calls = make_fake_bili(mention_uid=0)
+    store = Store(tmp_path / 'test.db')
+    store.init()
+    settings = Settings(topics='Python', owner_uid=42, owner_name='示例用户', fav_folder_id=9,
+                        share_method='both', dry_run=False, require_notification_confirmation=False)
+    judgment = {'worth_learning': True, 'score': 90, 'reason': '具体', 'takeaways': ['先复现'],
+                'risk': '无', 'comment_draft': '步骤清楚。'}
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='https://fake.test') as http:
+        runner = Runner(settings, store, BiliClient(http, 'SESSDATA=x; bili_jct=csrf; DedeUserID=99'),
+                        judge=lambda *a: asyncio.sleep(0, result=judgment), sleep=lambda _: asyncio.sleep(0))
+        await runner.run_once(check_replies=False)
+    assert store.recent_runs()[0]['status'] == 'failed'
+    assert not any(path.endswith('/send_msg') for path, _ in calls)

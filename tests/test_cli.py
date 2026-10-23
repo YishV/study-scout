@@ -19,10 +19,12 @@ from study_scout.storage import Store
 def fake_judge(*_):
     return asyncio.sleep(0, result={
         'worth_learning': True,
-        'score': 80,
+        'score': 90,
         'reason': '具体',
         'takeaways': ['先复现'],
         'risk': '无',
+        'like_recommended': True,
+        'favorite_recommended': True,
     })
 
 
@@ -292,6 +294,26 @@ def test_persona_interests_and_share_method_come_from_env(tmp_path):
     assert settings.interests == ['Python', 'AI', '软件工程']
     assert settings.persona == '认真、简短、只谈具体做法'
     assert settings.share_method == 'private_message'
+
+
+def test_both_share_mode_and_action_score_floors_come_from_env(tmp_path):
+    path = tmp_path / '.env'
+    path.write_text('BILI_SHARE_METHOD=both\nBILI_LIKE_MIN_SCORE=78\n'
+                    'BILI_FAVORITE_MIN_SCORE=90\n', encoding='utf-8')
+    settings = Settings.from_env(path)
+    assert settings.share_method == 'both'
+    assert settings.like_min_score == 78
+    assert settings.favorite_min_score == 90
+
+
+@pytest.mark.asyncio
+async def test_status_describes_both_share_methods(tmp_path):
+    store = Store(tmp_path / 'test.db')
+    store.init()
+    output = []
+    result = await cli.run_command('status', Settings(share_method='both'), store, output=output.append)
+    assert result == 0
+    assert any('评论区 @ + 私信' in line for line in output)
 
 
 def test_unknown_share_method_is_rejected(tmp_path):

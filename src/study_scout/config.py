@@ -32,6 +32,8 @@ class Settings:
     require_notification_confirmation: bool = True
     persona: str = '认真、简短、只谈视频中的具体做法，不装懂'
     share_method: str = 'private_message'
+    like_min_score: int = 75
+    favorite_min_score: int = 85
     listen_interval_seconds: int = 60
     listen_max_per_cycle: int = 5
     listen_max_per_session: int = 20
@@ -63,6 +65,8 @@ class Settings:
             require_notification_confirmation=get('BILI_REQUIRE_NOTIFICATION_CONFIRMATION', 'true').lower() != 'false',
             persona=get('STUDY_PERSONA', '认真、简短、只谈视频中的具体做法，不装懂'),
             share_method=get('BILI_SHARE_METHOD', 'private_message'),
+            like_min_score=int(get('BILI_LIKE_MIN_SCORE', '75')),
+            favorite_min_score=int(get('BILI_FAVORITE_MIN_SCORE', '85')),
             listen_interval_seconds=int(get('BILI_LISTEN_INTERVAL_SECONDS', '60')),
             listen_max_per_cycle=int(get('BILI_LISTEN_MAX_PER_CYCLE', '5')),
             listen_max_per_session=int(get('BILI_LISTEN_MAX_PER_SESSION', '20')),
@@ -73,8 +77,10 @@ class Settings:
             raise ValueError('写操作等待必须至少 5 秒，最大值不得小于最小值')
         if not s.interests:
             raise ValueError('STUDY_TOPICS 至少填写一个兴趣词')
-        if s.share_method not in ('private_message', 'comment_mention'):
-            raise ValueError('BILI_SHARE_METHOD 只能是 private_message 或 comment_mention')
+        if s.share_method not in ('private_message', 'comment_mention', 'both'):
+            raise ValueError('BILI_SHARE_METHOD 只能是 private_message、comment_mention 或 both')
+        if not 70 <= s.like_min_score <= 100 or not 70 <= s.favorite_min_score <= 100:
+            raise ValueError('BILI_LIKE_MIN_SCORE 和 BILI_FAVORITE_MIN_SCORE 必须为 70～100')
         if s.listen_interval_seconds < 60:
             raise ValueError('BILI_LISTEN_INTERVAL_SECONDS 至少为 60')
         if not 1 <= s.listen_max_per_cycle <= 5:
