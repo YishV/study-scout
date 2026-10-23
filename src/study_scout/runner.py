@@ -68,13 +68,15 @@ class Runner:
                     detail = await self.bili.detail(bvid)
                     title = detail.get('title', '')
                     author = (detail.get('owner') or {}).get('name', '')
+                    candidate_id = self.store.add_candidate(run_id, {'bvid': bvid, 'aid': detail['aid'], 'cid': detail['cid'], 'title': title, 'description': detail.get('desc', ''), 'author': author, 'duration': detail.get('duration'), 'pubdate': detail.get('pubdate')})
                     if title in titles or author in authors:
+                        self.store.record_skip(candidate_id, 'duplicate_title' if title in titles else 'duplicate_author')
                         continue
                     titles.add(title)
                     authors.add(author)
-                    candidate_id = self.store.add_candidate(run_id, {'bvid': bvid, 'aid': detail['aid'], 'cid': detail['cid'], 'title': title, 'description': detail.get('desc', ''), 'author': author, 'duration': detail.get('duration'), 'pubdate': detail.get('pubdate')})
                     transcript = await self.bili.subtitles(detail['aid'], detail['cid'])
                     if not transcript:
+                        self.store.record_skip(candidate_id, 'no_subtitles')
                         continue
                     self.store.set_subtitle_available(candidate_id)
                     self.step = f'判断 {bvid}'
@@ -82,18 +84,21 @@ class Runner:
                         judgment = await self._judge(detail, transcript)
                     except (ValueError, KeyError) as exc:
                         log.warning('判断失败 %s: %s', bvid, exc)
+                        self.store.record_skip(candidate_id, 'judge_error')
                         self.store.record_action(candidate_id, 'judge', 'failed', error=str(exc))
                         continue
                     self.store.record_judgment(candidate_id, judgment, self.settings.model_name)
                     if not judgment.worth_learning or judgment.score < 70 or not judgment.takeaways:
+                        self.store.record_skip(candidate_id, 'not_selected')
                         continue
-                    selected += 1
                     try:
                         message = build_comment(self.settings.owner_name, judgment.comment_draft or judgment.takeaways[0],
                                                 mention=self.settings.share_method == 'comment_mention')
                     except ValueError as exc:
                         log.warning('评论草稿不合规 %s: %s', bvid, exc)
+                        self.store.record_skip(candidate_id, 'invalid_comment')
                         continue
+                    selected += 1
                     share_message = (f"推荐视频：{title[:80]}\n"
                                      f"https://www.bilibili.com/video/{bvid}\n"
                                      f"看点：{judgment.comment_draft or judgment.takeaways[0]}")

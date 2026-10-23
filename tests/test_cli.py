@@ -33,6 +33,23 @@ def test_login_qr_fits_a_normal_terminal():
     assert max(map(len, lines)) <= 80
 
 
+def test_login_qr_is_compact_but_keeps_a_readable_fallback_link():
+    url = 'https://passport.bilibili.com/h5-app/passport/login/scan?navhide=1&qrcode_key=' + 'x' * 72
+    lines = cli.render_qr(url).splitlines()
+    assert len(lines[0]) <= 49
+    assert len(lines) <= 25
+
+
+def test_dashboard_command_starts_without_scanning_or_running(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    opened = []
+    monkeypatch.setattr(cli, 'serve_dashboard', lambda store: opened.append(store.path), raising=False)
+
+    assert cli.main(['dashboard']) == 0
+    assert opened == [Path('data/study-scout.sqlite3')]
+    assert Store(opened[0]).recent_runs() == []
+
+
 def test_session_lock_is_shared_between_processes(tmp_path):
     lock_path = tmp_path / 'study-scout.lock'
     ready_path = tmp_path / 'ready'

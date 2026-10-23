@@ -195,7 +195,33 @@ async def test_missing_subtitle_skips_judgment_and_actions(tmp_path):
         runner = Runner(Settings(), store, BiliClient(http), judge=lambda *a: pytest.fail('judge should not run'))
         await runner.run_once()
         assert store.recent_runs()[0]['selected_count'] == 0
+        assert store.dashboard_data()['videos'][0]['skip_reason'] == 'no_subtitles'
         assert not any(p == 'x/v2/reply/add' for p, _ in calls)
+
+
+@pytest.mark.asyncio
+async def test_duplicate_author_video_is_still_visible_in_browsing_history(tmp_path):
+    class TwoVideos:
+        async def discover(self, _interests):
+            return [{'bvid': 'BVfirst'}, {'bvid': 'BVsecond'}]
+
+        async def detail(self, bvid):
+            return {'bvid': bvid, 'aid': 1 if bvid == 'BVfirst' else 2, 'cid': 3,
+                    'title': bvid, 'owner': {'name': '同一作者'}}
+
+        async def subtitles(self, _aid, _cid):
+            return '具体学习步骤'
+
+    store = Store(tmp_path / 'test.db')
+    store.init()
+    runner = Runner(Settings(topics='Python'), store, TwoVideos(),
+                    judge=lambda *a: asyncio.sleep(0, result={
+                        'worth_learning': False, 'score': 20, 'reason': '一般',
+                        'takeaways': [], 'risk': '无'}))
+    await runner.run_once()
+    videos = store.dashboard_data()['videos']
+    assert [video['bvid'] for video in videos] == ['BVfirst', 'BVsecond']
+    assert videos[1]['skip_reason'] == 'duplicate_author'
 
 
 @pytest.mark.asyncio

@@ -9,10 +9,12 @@ from pathlib import Path
 
 import httpx
 import qrcode
+from qrcode.constants import ERROR_CORRECT_L
 
 from .bili.auth import QRLogin
 from .bili.client import BiliClient
 from .config import Settings
+from .dashboard import serve_dashboard
 from .instance_lock import AlreadyRunning, single_instance
 from .runner import Runner
 from .storage import Store
@@ -21,7 +23,7 @@ log = logging.getLogger(__name__)
 
 
 def render_qr(url: str) -> str:
-    qr = qrcode.QRCode(border=2)
+    qr = qrcode.QRCode(border=2, error_correction=ERROR_CORRECT_L)
     qr.add_data(url)
     qr.make(fit=True)
     # Pair two module rows per terminal row so long login URLs fit an 80-column console.
@@ -142,17 +144,20 @@ async def _run_command(command, settings, store, *, bvid=None, comment_id=None, 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description='扫码登录后执行一轮 B 站学习筛选')
-    parser.add_argument('command', nargs='?', choices=('run', 'status', 'verify-mention', 'verify-private-message', 'confirm-notification', 'notification-missing', 'check-replies'), default='run')
+    parser.add_argument('command', nargs='?', choices=('run', 'status', 'dashboard', 'verify-mention', 'verify-private-message', 'confirm-notification', 'notification-missing', 'check-replies'), default='run')
     parser.add_argument('value', nargs='?', help='验证视频 BV 号或待确认的评论 ID')
     args = parser.parse_args(argv)
     if args.command in ('verify-mention', 'confirm-notification', 'notification-missing') and not args.value:
         parser.error('此命令需要视频 BV 号或评论 ID')
-    if args.command in ('run', 'status', 'verify-private-message', 'check-replies') and args.value:
+    if args.command in ('run', 'status', 'dashboard', 'verify-private-message', 'check-replies') and args.value:
         parser.error('此命令不接受额外参数')
     try:
-        settings = Settings.from_env()
         store = Store(Path('data/study-scout.sqlite3'))
         store.init()
+        if args.command == 'dashboard':
+            serve_dashboard(store)
+            return 0
+        settings = Settings.from_env()
         comment_id = int(args.value) if args.command in ('confirm-notification', 'notification-missing') else None
         return asyncio.run(run_command(args.command, settings, store,
                                        bvid=args.value if args.command == 'verify-mention' else None,

@@ -23,7 +23,7 @@ class Store:
         with self.connect() as db:
             db.executescript('''
             CREATE TABLE IF NOT EXISTS runs (id INTEGER PRIMARY KEY, started_at TEXT, finished_at TEXT, status TEXT, candidates_count INTEGER DEFAULT 0, selected_count INTEGER DEFAULT 0, actions_ok INTEGER DEFAULT 0, actions_failed INTEGER DEFAULT 0, error_code TEXT);
-            CREATE TABLE IF NOT EXISTS candidates (id INTEGER PRIMARY KEY, run_id INTEGER REFERENCES runs(id), bvid TEXT, aid INTEGER, cid INTEGER, title TEXT, description TEXT, author TEXT, duration INTEGER, pubdate INTEGER, subtitle_available INTEGER DEFAULT 0, seen_at TEXT, UNIQUE(run_id,bvid));
+            CREATE TABLE IF NOT EXISTS candidates (id INTEGER PRIMARY KEY, run_id INTEGER REFERENCES runs(id), bvid TEXT, aid INTEGER, cid INTEGER, title TEXT, description TEXT, author TEXT, duration INTEGER, pubdate INTEGER, subtitle_available INTEGER DEFAULT 0, skip_reason TEXT, seen_at TEXT, UNIQUE(run_id,bvid));
             CREATE TABLE IF NOT EXISTS judgments (id INTEGER PRIMARY KEY, candidate_id INTEGER REFERENCES candidates(id), worth_learning INTEGER, score INTEGER, reason TEXT, takeaways_json TEXT, risk TEXT, model TEXT, raw_json TEXT, created_at TEXT);
             CREATE TABLE IF NOT EXISTS actions (id INTEGER PRIMARY KEY, candidate_id INTEGER REFERENCES candidates(id), kind TEXT, status TEXT, request_json TEXT, response_json TEXT, error_code TEXT, created_at TEXT, UNIQUE(candidate_id,kind));
             CREATE TABLE IF NOT EXISTS comments (id INTEGER PRIMARY KEY, candidate_id INTEGER REFERENCES candidates(id), rpid INTEGER, message TEXT, mention_uid INTEGER, mention_verified INTEGER DEFAULT 0, notification_confirmed INTEGER DEFAULT 0, status TEXT, created_at TEXT);
@@ -31,6 +31,9 @@ class Store:
             CREATE TABLE IF NOT EXISTS accounts (id INTEGER PRIMARY KEY, platform TEXT, uid INTEGER, nickname TEXT, credential_blob BLOB, updated_at TEXT);
             CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT);
             ''')
+            columns = {row['name'] for row in db.execute('PRAGMA table_info(candidates)')}
+            if 'skip_reason' not in columns:
+                db.execute('ALTER TABLE candidates ADD COLUMN skip_reason TEXT')
 
     def start_run(self):
         with self.connect() as db:
@@ -56,6 +59,10 @@ class Store:
     def set_subtitle_available(self, candidate_id):
         with self.connect() as db:
             db.execute('UPDATE candidates SET subtitle_available=1 WHERE id=?', (candidate_id,))
+
+    def record_skip(self, candidate_id, reason):
+        with self.connect() as db:
+            db.execute('UPDATE candidates SET skip_reason=? WHERE id=?', (reason, candidate_id))
 
     def record_action(self, candidate_id, kind, status, request=None, response=None, error=None):
         with self.connect() as db:
@@ -133,3 +140,48 @@ class Store:
             db.execute('''UPDATE runs SET candidates_count=?,selected_count=?,
                 actions_ok=(SELECT count(*) FROM actions a JOIN candidates c ON c.id=a.candidate_id WHERE c.run_id=? AND a.status='ok'),
                 actions_failed=(SELECT count(*) FROM actions a JOIN candidates c ON c.id=a.candidate_id WHERE c.run_id=? AND a.status IN ('failed','mention_unverified')) WHERE id=?''', (candidates, selected, run_id, run_id, run_id))
+
+    def dashboard_data(self, page=1, run_id=None):
+        """Read a bounded snapshot for the local dashboard without a write-capable connection."""
+        page = max(1, int(page))
+        with sqlite3.connect(self.path.resolve().as_uri() + '?mode=ro', uri=True) as db:
+            db.row_factory = sqlite3.Row
+            db.execute('PRAGMA query_only=ON')
+            total_runs = db.execute('SELECT count(*) FROM runs').fetchone()[0]
+            runs = [dict(row) for row in db.execute(
+                'SELECT * FROM runs ORDER BY id DESC LIMIT 10 OFFSET ?', ((page - 1) * 10,))]
+            selected = (db.execute('SELECT * FROM runs WHERE id=?', (run_id,)).fetchone()
+                        if run_id is not None else None)
+            selected_run = dict(selected) if selected else (runs[0] if runs else None)
+            totals = {
+                'runs': total_runs,
+                'videos': db.execute('SELECT count(*) FROM candidates').fetchone()[0],
+                'selected': db.execute('SELECT coalesce(sum(selected_count),0) FROM runs').fetchone()[0],
+                'actions_ok': db.execute("SELECT count(*) FROM actions WHERE status='ok' AND kind IN ('like','favorite','comment','private_message')").fetchone()[0],
+                'actions_failed': db.execute("SELECT count(*) FROM actions WHERE status='failed' AND kind IN ('like','favorite','comment','private_message')").fetchone()[0],
+                'replies_ok': db.execute("SELECT count(*) FROM replies WHERE status='ok'").fetchone()[0],
+            }
+            videos = []
+            if selected_run:
+                rows = db.execute('''SELECT c.*,j.worth_learning,j.score,j.reason,j.takeaways_json
+                    FROM candidates c LEFT JOIN judgments j ON j.candidate_id=c.id
+                    WHERE c.run_id=? ORDER BY c.id''', (selected_run['id'],))
+                for row in rows:
+                    video = dict(row)
+                    video['takeaways'] = json.loads(video['takeaways_json'] or '[]')
+                    action_rows = db.execute(
+                        'SELECT kind,status,error_code FROM actions WHERE candidate_id=? ORDER BY id',
+                        (video['id'],))
+                    video['actions'] = {action['kind']: action['status'] for action in action_rows}
+                    video['action_errors'] = {action['kind']: action['error_code'] for action in db.execute(
+                        'SELECT kind,error_code FROM actions WHERE candidate_id=? AND error_code IS NOT NULL',
+                        (video['id'],))}
+                    video['comments'] = []
+                    for comment in db.execute('SELECT * FROM comments WHERE candidate_id=? ORDER BY id', (video['id'],)):
+                        entry = dict(comment)
+                        entry['replies'] = [dict(reply) for reply in db.execute(
+                            'SELECT * FROM replies WHERE comment_id=? ORDER BY id', (entry['id'],))]
+                        video['comments'].append(entry)
+                    videos.append(video)
+        return {'totals': totals, 'runs': runs, 'selected_run': selected_run,
+                'videos': videos, 'page': page, 'has_next': page * 10 < total_runs}
